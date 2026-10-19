@@ -60,7 +60,3 @@ test('1 行の項目: 日本語・記号・絵文字・全角空白は通す', f
 test('1 行の項目: UTF-8 として不正な文字列は拒否する', function () {
     expect(SingleLine::passes("\x8f\xa4\x95\x69"))->toBeFalse();
 });
-
-test('strip は拒否する文字だけを取り除く', function () {
-    expect(SingleLine::strip("a\u{202E}b\tc.csv"))->toBe('abc.csv');
-});

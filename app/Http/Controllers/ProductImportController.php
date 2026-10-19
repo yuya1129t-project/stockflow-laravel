@@ -64,7 +64,7 @@ class ProductImportController extends Controller
     /** ファイル名を操作履歴・画面に出せる形にする（制御文字・表示方向の制御文字を除き、長さを制限） */
     private static function displayFileName(string $name): string
     {
-        $name = mb_check_encoding($name, 'UTF-8') ? mb_substr(SingleLine::strip($name), 0, 100) : '';
+        $name = mb_check_encoding($name, 'UTF-8') ? mb_substr((string) preg_replace(SingleLine::PATTERN, '', $name), 0, 100) : '';
 
         return $name !== '' ? $name : '（名前なし）';
     }

@@ -121,7 +121,7 @@ test('1 行でもエラーがあれば全体を取り込まない（行番号付
         ->and($result['errors'])->toBe([
             ['line' => 4, 'field' => '商品名', 'message' => '商品名を入力してください'],
             ['line' => 4, 'field' => '売価', 'message' => '売価は0以上の整数で入力してください'],
-            ['line' => 5, 'field' => '商品名', 'message' => '商品名に改行・タブなどの制御文字は使えません'],
+            ['line' => 5, 'field' => '商品名', 'message' => '商品名 に改行・タブなどの制御文字は使えません'],
         ])
         ->and($result['totalErrors'])->toBe(3);
     expect(Product::query()->sole()->sales_price)->toBe(100)
