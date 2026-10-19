@@ -8,6 +8,8 @@ use App\Http\Controllers\ProductExportController;
 use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\PurchaseOrderExportController;
+use App\Http\Controllers\SalesOrderController;
+use App\Http\Controllers\SalesOrderExportController;
 use App\Http\Controllers\StockController;
 use Illuminate\Support\Facades\Route;
 use Laravel\Fortify\Http\Controllers\AuthenticatedSessionController;
@@ -50,6 +52,18 @@ Route::middleware(['auth'])->group(function () {
         Route::put('{product}', [ProductController::class, 'update'])->whereNumber('product')->can(Permission::MasterEdit)->name('update');
         Route::post('{product}/deactivate', [ProductActivationController::class, 'deactivate'])->whereNumber('product')->can(Permission::MasterDeactivate)->name('deactivate');
         Route::post('{product}/reactivate', [ProductActivationController::class, 'reactivate'])->whereNumber('product')->can(Permission::MasterDeactivate)->name('reactivate');
+    });
+
+    // 受注（docs/spec.md §4・§5-5）。コントローラー・Form Request でも Policy（SalesOrderPolicy）で検査する
+    Route::prefix('sales-orders')->name('sales-orders.')->group(function () {
+        Route::get('/', [SalesOrderController::class, 'index'])->can(Permission::View)->name('index');
+        Route::get('create', [SalesOrderController::class, 'create'])->can(Permission::OrderEdit)->name('create');
+        Route::post('/', [SalesOrderController::class, 'store'])->can(Permission::OrderEdit)->name('store');
+        Route::get('export', SalesOrderExportController::class)->can(Permission::CsvExport)->name('export');
+        Route::get('{salesOrder}', [SalesOrderController::class, 'show'])->whereNumber('salesOrder')->can(Permission::View)->name('show');
+        Route::get('{salesOrder}/edit', [SalesOrderController::class, 'edit'])->whereNumber('salesOrder')->can(Permission::OrderEdit)->name('edit');
+        Route::put('{salesOrder}', [SalesOrderController::class, 'update'])->whereNumber('salesOrder')->can(Permission::OrderEdit)->name('update');
+        Route::post('{salesOrder}/status', [SalesOrderController::class, 'changeStatus'])->whereNumber('salesOrder')->can(Permission::OrderEdit)->name('status');
     });
 
     // 発注（docs/spec.md §4・§5-6）。コントローラー・Form Request でも Policy（PurchaseOrderPolicy）で検査する

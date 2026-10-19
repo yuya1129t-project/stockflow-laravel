@@ -1,5 +1,6 @@
 import { formatNumber, productListQuery } from '@/lib/products';
 import { show as purchaseOrderShow } from '@/routes/purchase-orders';
+import { show as salesOrderShow } from '@/routes/sales-orders';
 import type {
     StockFilters,
     StockLevelFilter,
@@ -44,8 +45,10 @@ export function formatStockRef(ref: StockMovement['ref']): string {
     return `${REF_LABELS[ref.type]} ${ref.number ?? `#${ref.id}`}`;
 }
 
-/** 参照元の伝票の詳細画面（画面のある伝票だけ。受注の画面は #8 で追加する） */
+/** 参照元の伝票の詳細画面（伝票が見つからないときは null） */
 export function stockRefHref(ref: StockMovement['ref']): string | null {
     if (ref === null || ref.number === null) return null;
-    return ref.type === 'purchase_order' ? purchaseOrderShow.url(ref.id) : null;
+    return ref.type === 'purchase_order'
+        ? purchaseOrderShow.url(ref.id)
+        : salesOrderShow.url(ref.id);
 }
