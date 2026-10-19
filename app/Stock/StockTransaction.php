@@ -51,6 +51,8 @@ use PDOException;
  * - 同じトランザクションで、lockProducts／record より前に、対象の商品の行に共有ロックを取らない（FOR SHARE・明細の INSERT の
  *   外部キー検査）。共有ロックを持った 2 本が排他ロックへの引き上げを互いに待ってデッドロックする。明細を書くなら
  *   「lockProducts（全商品）→ 伝票・明細の書き込み → record」の順にする（排他ロックを持っていれば外部キー検査は待たない）
+ * - 伝票の見出しの条件付き UPDATE（商品を参照する外部キーの列を変えないもの。商品に共有ロックを取らない）は、lockProducts より
+ *   前に行ってよい（発注の入荷の順番。二重処理の 2 本目が商品のロックを持たずに伝票の行で待つので、むしろ望ましい）
  * - 再試行ではコールバックが 2 回以上動く（DB はロールバックされるが、PHP の変数・モデルの状態は戻らない）。そのため:
  *     - コールバックの外で取得した Eloquent モデルを、コールバックの中で書き換えて save しない（2 回目は「変更なし」として
  *       UPDATE が出ず、伝票の更新だけが消える）。伝票は UPDATE … WHERE id = ? AND status = ? の件数で更新するか、
@@ -74,6 +76,9 @@ final class StockTransaction
 
     /** コールバックの実行中だけ true */
     private bool $open = true;
+
+    /** 実行中の run のコールバックの数（inProgress。伝票の FOR SHARE のロックとの併用を拒否するため） */
+    private static int $running = 0;
 
     /** @var list<int>|null 最初にロックした商品（この後のロックはこの範囲に限る） */
     private ?array $lockedIds = null;
@@ -112,10 +117,12 @@ final class StockTransaction
                 try {
                     return $connection->transaction(function () use ($callback, $connection) {
                         $stock = new self($connection, $connection->transactionLevel());
+                        self::$running++;
                         try {
                             return $callback($stock);
                         } finally {
                             $stock->open = false;
+                            self::$running--;
                         }
                     });
                 } catch (PDOException $e) {
@@ -128,6 +135,16 @@ final class StockTransaction
         } finally {
             $connection->statement('SET SESSION innodb_lock_wait_timeout = ?', [$previousTimeout]);
         }
+    }
+
+    /**
+     * 在庫を記録するトランザクション（run のコールバック）の実行中か。
+     * 伝票の明細の商品を FOR SHARE でロックする部品（App\Orders\OrderLocks::lockProductsForLines）が、在庫を記録する
+     * トランザクションの中で呼ばれたら拒否するために使う（共有ロック → 排他ロックの引き上げでデッドロックするため）
+     */
+    public static function inProgress(): bool
+    {
+        return self::$running > 0;
     }
 
     /** デッドロック（1213）か */

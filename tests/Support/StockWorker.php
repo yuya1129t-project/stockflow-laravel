@@ -32,8 +32,11 @@ final class StockWorker
         private readonly string $payloadFile,
     ) {}
 
-    /** @param  array<string, mixed>  $payload */
-    public static function start(array $payload): self
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  string  $script  tests/Support のワーカー（発注の操作は purchase-order-worker.php）
+     */
+    public static function start(array $payload, string $script = 'stock-worker.php'): self
     {
         $file = tempnam(sys_get_temp_dir(), 'stockflow-stock-');
         assert(is_string($file));
@@ -51,7 +54,7 @@ final class StockWorker
             'MAIL_MAILER' => 'array',
             'BROADCAST_CONNECTION' => 'null',
         ];
-        $process = new Process([PHP_BINARY, base_path('tests/Support/stock-worker.php'), $file], base_path(), $env, $input, 60);
+        $process = new Process([PHP_BINARY, base_path("tests/Support/{$script}"), $file], base_path(), $env, $input, 60);
         $process->start();
         self::$started[] = $process;
 

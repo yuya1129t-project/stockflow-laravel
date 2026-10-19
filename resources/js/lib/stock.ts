@@ -1,4 +1,5 @@
 import { formatNumber, productListQuery } from '@/lib/products';
+import { show as purchaseOrderShow } from '@/routes/purchase-orders';
 import type {
     StockFilters,
     StockLevelFilter,
@@ -37,8 +38,14 @@ export function formatSignedNumber(value: number): string {
     return value > 0 ? `+${formatNumber(value)}` : formatNumber(value);
 }
 
-/** 参照元の伝票の表示（伝票の画面はまだないのでテキスト） */
+/** 参照元の伝票の表示（伝票の種類と番号） */
 export function formatStockRef(ref: StockMovement['ref']): string {
     if (ref === null) return '—';
     return `${REF_LABELS[ref.type]} ${ref.number ?? `#${ref.id}`}`;
+}
+
+/** 参照元の伝票の詳細画面（画面のある伝票だけ。受注の画面は #8 で追加する） */
+export function stockRefHref(ref: StockMovement['ref']): string | null {
+    if (ref === null || ref.number === null) return null;
+    return ref.type === 'purchase_order' ? purchaseOrderShow.url(ref.id) : null;
 }
