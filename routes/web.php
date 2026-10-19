@@ -1,6 +1,7 @@
 <?php
 
 use App\Auth\Permission;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\PartnerController;
 use App\Http\Controllers\ProductActivationController;
 use App\Http\Controllers\ProductController;
@@ -24,7 +25,8 @@ Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])->middl
 
 // ログインが必要な画面。権限はルートごとに ->can(Permission::...) で検査する（docs/spec.md §2）
 Route::middleware(['auth'])->group(function () {
-    Route::inertia('dashboard', 'Dashboard')->can(Permission::View)->name('dashboard');
+    // ダッシュボード（docs/spec.md §5-2）
+    Route::get('dashboard', DashboardController::class)->can(Permission::View)->name('dashboard');
 
     // 取引先マスタ（docs/spec.md §5-4・§6）。コントローラーでも Policy（PartnerPolicy）で検査する
     Route::controller(PartnerController::class)->prefix('partners')->name('partners.')->group(function () {

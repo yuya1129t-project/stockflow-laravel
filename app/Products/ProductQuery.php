@@ -74,6 +74,39 @@ final class ProductQuery
     }
 
     /**
+     * 発注点割れの商品の件数と、不足（発注点 − 現在庫）の大きい順の上位 limit 件（ダッシュボード）。
+     * 発注点割れの定義は一覧・現在庫一覧の「発注点割れのみ」と同じ（onlyLowStock）
+     *
+     * @return array{count: int, items: list<array{id: int, code: string, name: string, unit: string, reorder_point: int, stock: int, shortage: int}>}
+     */
+    public function lowStock(int $limit): array
+    {
+        $count = $this->onlyLowStock($this->withStock(Product::query()))->count();
+        $products = $this->onlyLowStock($this->withStock(Product::query()))
+            ->orderByRaw('products.reorder_point - COALESCE(s.stock, 0) DESC')
+            ->orderBy('products.code')
+            ->limit($limit)
+            ->get();
+
+        return [
+            'count' => $count,
+            'items' => array_values($products->map(function (Product $p): array {
+                $item = self::toItem($p);
+
+                return [
+                    'id' => $item['id'],
+                    'code' => $item['code'],
+                    'name' => $item['name'],
+                    'unit' => $item['unit'],
+                    'reorder_point' => $item['reorder_point'],
+                    'stock' => $item['stock'],
+                    'shortage' => $item['reorder_point'] - $item['stock'],
+                ];
+            })->all()),
+        ];
+    }
+
+    /**
      * 登録済みのカテゴリ（検索の選択肢・入力候補）
      *
      * @return list<string>
