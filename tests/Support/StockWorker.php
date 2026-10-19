@@ -161,7 +161,8 @@ final class StockWorker
 
     /**
      * 接続 waiting が行ロックを待っている状態に入るまで待つ（performance_schema.data_lock_waits）。
-     * blockedBy を渡したら、その接続が持つロックを待っていることも確かめる。上限を過ぎたらテストの失敗
+     * blockedBy を渡したら、その接続（のトランザクション）が持つロックを待っていることも確かめる（相手の求め方は lockWaits）。
+     * 上限を過ぎたらテストの失敗
      */
     public static function waitForLockWait(int $waiting, ?int $blockedBy = null): void
     {
@@ -214,14 +215,31 @@ final class StockWorker
         ));
     }
 
-    /** @return list<array{waiting: int, blocking: int}> 今のロック待ち（待っている接続 → 待たせている接続） */
+    /**
+     * 今のロック待ち（待っている接続 → 待たせている接続）。
+     * 待たせている側の接続は、待たせているトランザクション（BLOCKING_ENGINE_TRANSACTION_ID）の表のロック（LOCK_TYPE = TABLE。
+     * トランザクションの最初の文で、そのトランザクションのスレッドが取る）のスレッドから求める。
+     * data_lock_waits の BLOCKING_THREAD_ID は、待たせている側の行のロックが「待ちを経て得たロック」や INSERT の暗黙のロック
+     * （後から来た側が明示のロックに変える）のとき、待っている側自身のスレッドを指すことがある（実 DB で観測。PR #23 のレビュー）。
+     * 表のロックが見つからないときだけ BLOCKING_THREAD_ID を使う。
+     * information_schema.innodb_trx は使わない（0.1 秒より短い間隔で読み続けると内容が更新されない）
+     *
+     * @return list<array{waiting: int, blocking: int}>
+     */
     public static function lockWaits(): array
     {
         $rows = self::observer()->select(<<<'SQL'
-            SELECT rt.PROCESSLIST_ID AS waiting, bt.PROCESSLIST_ID AS blocking
+            SELECT rt.PROCESSLIST_ID AS waiting, COALESCE(owner.PROCESSLIST_ID, bt.PROCESSLIST_ID) AS blocking
             FROM performance_schema.data_lock_waits w
             JOIN performance_schema.threads rt ON rt.THREAD_ID = w.REQUESTING_THREAD_ID
             JOIN performance_schema.threads bt ON bt.THREAD_ID = w.BLOCKING_THREAD_ID
+            LEFT JOIN (
+                SELECT ENGINE_TRANSACTION_ID, MIN(THREAD_ID) AS THREAD_ID
+                FROM performance_schema.data_locks
+                WHERE LOCK_TYPE = 'TABLE'
+                GROUP BY ENGINE_TRANSACTION_ID
+            ) tl ON tl.ENGINE_TRANSACTION_ID = w.BLOCKING_ENGINE_TRANSACTION_ID
+            LEFT JOIN performance_schema.threads owner ON owner.THREAD_ID = tl.THREAD_ID
             SQL);
 
         return array_map(fn (object $r) => ['waiting' => (int) $r->waiting, 'blocking' => (int) $r->blocking], $rows);

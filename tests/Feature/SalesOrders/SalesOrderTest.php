@@ -150,7 +150,7 @@ describe('作成', function () {
     test('無効な商品・存在しない商品は行ごとのエラー', function () {
         $customer = soCustomer();
         $ok = soProduct();
-        $inactive = soProduct(['code' => 'P-9001', 'name' => '廃番', 'is_active' => false]);
+        $inactive = soProduct(['code' => 'P-0901', 'name' => '廃番', 'is_active' => false]); // ファクトリーの商品コード（P-9###）と重ならないコード
 
         $this->actingAs($this->staff)->post(route('sales-orders.store'), [
             ...soInput($customer, [[$ok, 1, 100], [$inactive, 1, 100]]),
@@ -160,7 +160,7 @@ describe('作成', function () {
                 ['product_id' => '999999', 'quantity' => '1', 'unit_price' => '100'],
             ],
         ])->assertSessionHasErrors([
-            'lines.1.product_id' => 'P-9001「廃番」は無効になっているため選べません',
+            'lines.1.product_id' => 'P-0901「廃番」は無効になっているため選べません',
             'lines.2.product_id' => '商品が見つかりません',
         ]);
         expect(SalesOrder::query()->count())->toBe(0);

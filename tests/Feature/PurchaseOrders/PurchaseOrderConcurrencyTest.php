@@ -88,9 +88,8 @@ test('採番: 同時に 2 件作成しても番号は重複しない（後の側
     $first = poWorker(['op' => 'create', 'userId' => $this->userId, 'input' => $input, 'hold' => true]);
     $first->waitUntilHolding();
     $second = poWorker(['op' => 'create', 'userId' => $this->userId, 'input' => $input]);
-    // 待たせている相手は確かめない: 行がない日は、先の側が INSERT した行の暗黙のロックを後の側が明示のロックに変えるため、
-    // performance_schema の待たせている側のスレッドが後の側自身になる（MySQL 8.4 で観測）。ほかにロックを持つ接続はない
-    StockWorker::waitForLockWait($second->connectionId());
+    // 行がない日は、先の側が INSERT した行の暗黙のロックを後の側が待つ（待たせている相手はトランザクションから求める: StockWorker::lockWaits）
+    StockWorker::waitForLockWait($second->connectionId(), $first->connectionId());
     $first->release();
     $a = $first->result();
     $b = $second->result();
@@ -205,27 +204,18 @@ test('作成と在庫の記録が同じ 2 商品で重なってもデッドロ�
 });
 
 describe('ステータス変更・編集が発注の行のロックで順番待ちになる', function () {
-    beforeEach(function () {
-        $this->holder = StockWorker::peer('po_holder');
-    });
-
-    function holdOrderRow(object $test, PurchaseOrder $order): void
-    {
-        $test->holder->beginTransaction();
-        $test->holder->select('SELECT id FROM purchase_orders WHERE id = ? FOR UPDATE', [$order->id]);
-    }
+    // 先の側は確定の直前（発注の行のロックを持ったまま）で止め、後の側がその行を待っていることを確かめてから確定させる。
+    // 2 本がそろって 3 本目のロックを待つ形にはしない（放されたロックをどちらが先に得るかは InnoDB が決め、保証がない）
 
     test('入荷と取消が同時: 先の入荷が確定し、取消は入荷済のため変更できない（在庫は 1 回分）', function () {
         $order = concurrencyOrder($this->supplier, PurchaseOrderStatus::Ordered, [[$this->p1, 5]]);
         $version = concurrencyVersion($order);
-        holdOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $receive = poWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'received', 'version' => $version]);
-        StockWorker::waitForLockWait($receive->connectionId(), $holderId);
+        $receive = poWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'received', 'version' => $version, 'hold' => true]);
+        $receive->waitUntilHolding();
         $cancel = poWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'cancelled', 'version' => $version]);
-        StockWorker::waitForLockWait($cancel->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($cancel->connectionId(), $receive->connectionId());
+        $receive->release();
         $a = $receive->result();
         $b = $cancel->result();
 
@@ -238,14 +228,12 @@ describe('ステータス変更・編集が発注の行のロックで順番待�
     test('明細を 0 行にする編集が先・発注済への変更が後: 明細 0 行の発注済はできない', function () {
         $order = concurrencyOrder($this->supplier, PurchaseOrderStatus::Draft, [[$this->p1, 5]]);
         $version = concurrencyVersion($order);
-        holdOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $edit = poWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => concurrencyInput($this->supplier, []), 'version' => $version]);
-        StockWorker::waitForLockWait($edit->connectionId(), $holderId);
+        $edit = poWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => concurrencyInput($this->supplier, []), 'version' => $version, 'hold' => true]);
+        $edit->waitUntilHolding();
         $toOrdered = poWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'ordered', 'version' => $version]);
-        StockWorker::waitForLockWait($toOrdered->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($toOrdered->connectionId(), $edit->connectionId());
+        $edit->release();
         $a = $edit->result();
         $b = $toOrdered->result();
 
@@ -258,14 +246,12 @@ describe('ステータス変更・編集が発注の行のロックで順番待�
     test('発注済への変更が先・編集が後: 編集は発注済のため保存せず、明細は元のまま', function () {
         $order = concurrencyOrder($this->supplier, PurchaseOrderStatus::Draft, [[$this->p1, 5]]);
         $version = concurrencyVersion($order);
-        holdOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $toOrdered = poWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'ordered', 'version' => $version]);
-        StockWorker::waitForLockWait($toOrdered->connectionId(), $holderId);
+        $toOrdered = poWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'ordered', 'version' => $version, 'hold' => true]);
+        $toOrdered->waitUntilHolding();
         $edit = poWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => concurrencyInput($this->supplier, [[$this->p1, 9]]), 'version' => $version]);
-        StockWorker::waitForLockWait($edit->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($edit->connectionId(), $toOrdered->connectionId());
+        $toOrdered->release();
         $a = $toOrdered->result();
         $b = $edit->result();
 
@@ -278,14 +264,12 @@ describe('ステータス変更・編集が発注の行のロックで順番待�
     test('編集が同時に 2 本: 後の側は先の確定を待ち、updated_at が変わったので競合になる', function () {
         $order = concurrencyOrder($this->supplier, PurchaseOrderStatus::Draft, [[$this->p1, 5]]);
         $version = concurrencyVersion($order);
-        holdOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $first = poWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => concurrencyInput($this->supplier, [[$this->p1, 6]]), 'version' => $version]);
-        StockWorker::waitForLockWait($first->connectionId(), $holderId);
+        $first = poWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => concurrencyInput($this->supplier, [[$this->p1, 6]]), 'version' => $version, 'hold' => true]);
+        $first->waitUntilHolding();
         $second = poWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => concurrencyInput($this->supplier, [[$this->p1, 7]]), 'version' => $version]);
-        StockWorker::waitForLockWait($second->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($second->connectionId(), $first->connectionId());
+        $first->release();
         $a = $first->result();
         $b = $second->result();
 

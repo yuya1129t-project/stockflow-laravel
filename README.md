@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml)
 
-> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知、ダッシュボード、外部向け REST API まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
+> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知、ダッシュボード、外部向け REST API、ブラウザテストまで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
 
 ## このリポジトリについて
 
@@ -12,6 +12,7 @@
 - 要件・方針の決定と公開の判断は本人が行い、設計・実装・コードレビュー（Claude と Codex の独立したレビュー）・指摘への対応は Claude Code が行っています。本人は成果物を確認しています
 - **データはすべて架空です**（実在の会社・人物・取引とは関係ありません）
 - [Next.js 版（stockflow-next）](https://github.com/yuya1129t-project/stockflow-next) と **同じ業務仕様**（[docs/spec.md](docs/spec.md)）・**同じ REST API 仕様**（[docs/openapi.json](docs/openapi.json)）で実装します
+- 設計の理由と確かめ方（MVC・Eloquent・権限・N+1・在庫引当・テストの方針・開発の進め方）は [docs/design-notes.md](docs/design-notes.md) にまとめています
 
 ## 主な機能
 
@@ -36,7 +37,7 @@
 | 画面           | Laravel 公式 Vue スターターキット（Inertia 3＋Vue 3＋TypeScript＋Tailwind CSS 4） |
 | 認証           | Laravel Fortify（スターターキット同梱）                                           |
 | データベース   | MySQL 8.4                                                                         |
-| テスト         | Pest                                                                              |
+| テスト         | Pest（ブラウザテストは Pest のブラウザテスト＋Playwright の Chromium）            |
 | 静的解析・整形 | Larastan（PHPStan level 7）／Pint／Vite+（フロントの lint・整形）／vue-tsc        |
 | CI             | GitHub Actions（MySQL サービスに対してテスト）                                    |
 | ローカル環境   | Laravel Sail（Docker Compose）                                                    |
@@ -231,7 +232,7 @@ erDiagram
     - 「設定」に残しているのは外観（ライト／ダーク）だけです
 - ログインの試行回数の制限: 同じメールアドレス＋IP から 1 分に 5 回、同じ IP から 1 分に 20 回まで（成功・失敗を問わず数えます）。超えると「ログインの試行回数が多すぎます。N 秒後に…」と表示します（JSON の要求には 429 と `Retry-After` ヘッダー）
     - ASCII 以外の文字を含むメールアドレスは照合せず、通常の失敗にします（DB の照合順序はゼロ幅スペースなどを無視するため、そのまま照合すると、変形したアドレスで「メールアドレス＋IP」の制限を回避できてしまう）
-    - **本番での注意**: IP は `$request->ip()` で取ります。ロードバランサーの後ろに置くときは、`trustProxies` で信頼するプロキシを設定しないと全員が 1 つの IP として数えられます（1 人の試行で全員がログインできなくなる）。#14（AWS でのデモ公開）で設定し、`at: '*'` にするならアプリに直接届く経路を塞ぎます
+    - **本番での注意**: IP は `$request->ip()` で取ります。ロードバランサーの後ろに置くときは、`trustProxies` で信頼するプロキシを設定しないと全員が 1 つの IP として数えられます（1 人の試行で全員がログインできなくなる）。#14（デモ公開。さくらのレンタルサーバの予定）で公開先の構成に合わせて設定し、`at: '*'` にするならアプリに直接届く経路を塞ぎます
 - 無効ユーザー（`is_active = false`）: パスワードが正しくてもログインできません（パスワードが違うときは通常の失敗と同じメッセージにして、無効かどうかを明かしません）。ログイン中に無効化された場合は、次のリクエストでログアウトしてログイン画面へ移ります（`App\Http\Middleware\EnsureUserIsActive`）
 - 成功したログインを操作履歴（`audit_logs`、`action = login`）に記録します（`App\Listeners\RecordLogin`。Laravel の `Login` イベント）。「ログインしたままにする」の Cookie での再認証も記録します。失敗したログインと、無効ユーザーの拒否は記録しません
 - ログインに成功したとき、ハッシュの設定（コスト）が変わっていればパスワードのハッシュを作り直します（Laravel の標準のログインと同じ）
@@ -333,7 +334,7 @@ $result = StockTransaction::run(function (StockTransaction $stock) use ($orderId
 - **`run` は最も外側のトランザクションとしてだけ呼べます**（ほかのトランザクションの中・`run` の中で呼ぶと例外）。伝票の更新など、同じトランザクションで書くものはすべてコールバックの中に書きます。`run` が戻った時点で確定しているので、通知はその後で送ります
 - トランザクションの外からは記録できません。`StockTransaction` は `run` の中でしか作れず（コンストラクターは private）、コールバックの外へ持ち出して使う・同じトランザクションで別の商品のロックをあとから追加する、はいずれも例外です
 - **MySQL には PostgreSQL の `FOR NO KEY UPDATE` がありません**。そのため `FOR UPDATE` は、明細（`sales_order_lines` など）の INSERT の外部キー検査が商品の行に取る共有ロックとも競合し、明細を入力の順番で INSERT する処理と交差するとデッドロックします（InnoDB で再現。負けるのは在庫の側）。対策は 2 つです
-    1. `run` はデッドロック（1213）のとき、コールバックごと 3 回まで再試行します。ロック待ちのタイムアウト（1205）は再試行せず、棚卸調整では「混み合っているため、調整できませんでした…もう一度実行してください」を返します。ロック待ちの上限は、`run` の間だけセッション単位で 10 秒にします（MySQL の既定は 50 秒。終わったら元に戻す）
+    1. `run` はデッドロック（1213）のとき、コールバックごと再試行します（最初の 1 回を含めて最大 3 回）。ロック待ちのタイムアウト（1205）は再試行せず、棚卸調整では「混み合っているため、調整できませんでした…もう一度実行してください」を返します。ロック待ちの上限は、`run` の間だけセッション単位で 10 秒にします（MySQL の既定は 50 秒。終わったら元に戻す）
     2. 明細を書く処理（#7・#8 の伝票の作成・編集）は、明細を INSERT する前に、明細の全商品の行を id の順に `SELECT … FOR SHARE` でまとめてロックします。こうすればデッドロックしません（テストで確認）
 - 同じトランザクションで、`lockProducts`／`record` より前に商品の行に共有ロック（`FOR SHARE`・明細の INSERT）を取らないでください。共有ロックを持った 2 本が排他ロックへの引き上げを互いに待ってデッドロックします。明細も書くなら「`lockProducts`（全商品）→ 伝票・明細の書き込み → `record`」の順にします（排他ロックを持っていれば外部キー検査は待ちません）
 - 再試行ではコールバックが 2 回以上動きます（DB はロールバックされますが、PHP の変数・モデルの状態は戻りません）。そのため
@@ -419,7 +420,7 @@ draft／ordered → cancelled（取消）        received・cancelled は最終�
 - 編集は仕入先を発注より先にロックします。これは将来、発注の行を読む処理が加わったときの備えです。取引先の編集は「取引先 FOR UPDATE → その取引先の発注を FOR SHARE で数える」の順で、今は件数を supplier_id の索引だけで数えるので発注の本体の行を待たず、逆の順（発注 → 仕入先）でも待ちは一周しません（PR #22 のレビューで確認）。数える代わりに発注の行を読む形（番号の一覧など）に変えると、発注を先に持ったまま取引先を待つ編集と一周します（デッドロック 1213 を 2 セッションで確認）
 - 明細の商品は INSERT の前に id の順にまとめて FOR SHARE でロックするので、明細を入力の順で INSERT しても（外部キー検査の共有ロック）、在庫の記録（id 順の FOR UPDATE）とデッドロックしません
 - **在庫を記録するトランザクション（入荷・出荷）では `OrderLocks::lockProductsForLines`（FOR SHARE）を使いません**。共有ロックを持った 2 本が排他ロックへの引き上げを互いに待ってデッドロックするためです。`StockTransaction::run` の中で呼ぶと例外にしています（商品の有効などは `lockProducts` の結果で確かめます）
-- 作成・編集・ステータス変更のロック待ちの上限は、在庫の記録と同じ 10 秒です（`OrderTransaction`。デッドロックは 3 回まで再試行し、ロック待ちのタイムアウトは再試行しません）。どちらも「混み合っているため、…できませんでした」と表示します
+- 作成・編集・ステータス変更のロック待ちの上限は、在庫の記録と同じ 10 秒です（`OrderTransaction`。デッドロックは最初の 1 回を含めて最大 3 回まで試行し、ロック待ちのタイムアウトは再試行しません）。どちらも「混み合っているため、…できませんでした」と表示します
 
 ### テスト
 
@@ -474,7 +475,7 @@ StockTransaction::run(function (StockTransaction $stock) use ($id, $expected) {
 
 - `tests/Feature/SalesOrders/SalesOrderTest.php`: 作成（採番・金額・明細・操作履歴・単価の初期値）、入力検証、顧客の種別・無効、無効な商品、編集（下書きのみ・競合・同じ時刻の 2 回の保存・実在しない version）、一覧・並べ替え・CSV、権限、ステータス変更（明細 0 行で確定できない・最終状態・競合）、操作履歴の失敗で全体を取り消す
 - `tests/Feature/SalesOrders/SalesOrderShipTest.php`: 出荷で在庫が減る・参照元、在庫不足で全体を中止（1 行だけ不足でも他の行を記録しない・状態・updated_at・操作履歴が変わらない・不足の表・補充すれば出荷できる）、発注点割れに変わった商品を返す、最終状態・取消の後は出荷できない、競合・実在しない version、操作履歴の失敗で出庫も取り消す、無効な顧客・商品でも出荷できる、viewer は 403
-- `tests/Feature/SalesOrders/SalesOrderConcurrencyTest.php`（別プロセスのワーカー `tests/Support/sales-order-worker.php`。後の側のロック待ちを `performance_schema.data_lock_waits` で確かめてから先を確定）: 同時作成で番号が重複しない、同じ受注の同時の 2 回の出荷で出庫は 1 回、別々の受注が同じ商品を同時に出荷して在庫が負にならない、明細の順番が逆の 2 受注の同時出荷でデッドロックしない、取引先の種別変更と作成（どちらが先でも）、商品の無効化と作成、作成と在庫の記録、出荷と取消、明細 0 行にする編集と確定、確定と編集、同時の 2 本の編集
+- `tests/Feature/SalesOrders/SalesOrderConcurrencyTest.php`（別プロセスのワーカー `tests/Support/sales-order-worker.php`。後の側のロック待ちを `performance_schema.data_lock_waits` で確かめてから先を確定）: 同時作成で番号が重複しない、同じ受注の同時の 2 回の出荷で出庫は 1 回、別々の受注が同じ商品を同時に出荷して在庫が負にならない、明細の順番が逆の 2 受注の同時出荷でデッドロックしない、取引先の種別変更と作成（どちらが先でも）、商品の無効化と作成、作成と在庫の記録、出荷と取消、明細 0 行にする編集と確定、確定と編集、同時の 2 本の編集、出荷がデッドロックの負け側になっても再試行（2 回目）で出荷でき出庫・操作履歴は 1 回分だけ、出荷のロック待ちのタイムアウト（1205）は再試行せず「混み合っています」（受注・在庫・操作履歴は変わらない）。同時の在庫不足では負け側の updated_at・操作履歴も変わらないことを確かめます
 - 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 出荷を「読んでから更新」にする、出荷の条件から updated_at を外す、明細ごとに `record` を呼ぶ、出荷で商品を明細の順にロックする、在庫の記録の商品のロックを外す、確定・取消の受注のロックを外す、編集の受注のロックを外す、顧客の FOR SHARE を外す、編集・ステータス変更の updated_at の比較を外す
 
 ## ユーザー管理・API トークン・操作履歴
@@ -568,7 +569,7 @@ STOCKFLOW_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 ```
 
 - コードを変えたらワーカーを再起動します（`./vendor/bin/sail artisan queue:restart`。動いているワーカーは古いコードのまま）
-- **AWS へのデプロイ（#14）では、Web とは別にワーカーを常駐させる必要があります**（ECS のサービスを 1 つ足す・Supervisor などで `php artisan queue:work` を起動し続ける）。ワーカーがないと通知は送られず、`jobs` テーブルにたまり続けます
+- **デモ公開（#14。さくらのレンタルサーバの予定）では、ワーカーを動かす仕組みが必要です**（共有サーバーでは cron で `php artisan queue:work --stop-when-empty` を定期実行する予定）。ワーカーがないと通知は送られず、`jobs` テーブルにたまり続けます
 
 ### テスト
 
@@ -671,7 +672,7 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 - PHP の `post_max_size` を超える `Content-Length` の申告は、Laravel の `ValidatePostSize`（全体のミドルウェア）が認証より前に 413 にします（本文は読みません。形は同じ problem+json）
 - ただし PHP では、**本文の受信は PHP の SAPI（`artisan serve`・php-fpm）がアプリの処理の前に終えています**（さらに Laravel の `Request::capture` が JSON の本文を先に読み込みます）。Next.js 版のように、受信の途中で打ち切って接続を切ることはアプリではできません
 - 認証より前のコストは、本文の形で大きく変わります。Laravel の全体のミドルウェア `TrimStrings`・`ConvertEmptyStringsToNull` は JSON の全要素を走査するので、**`/api/v1` ではこの 2 つを外しています**（`bootstrap/app.php`。API は本文とクエリを生のまま自前で読むため）。`artisan serve` で、要素の多い本文（`[1,1,…]` の 1,200 万要素・24MB）をトークンなしで POST したときの 401 までの時間は、外す前が 17.6 秒、外した後が 2.5 秒でした（残りは受信と `Request::capture` の JSON のデコード）。**`/login` など `/api/v1` 以外のパスには、外す前と同じコストが残ります**
-- そのため、**受信そのものの上限はサーバー全体に掛けます**。#14（AWS でのデモ公開）で、前段の Web サーバー（nginx なら `client_max_body_size` をサーバー全体に。画面で最大のアップロード（商品の CSV の取込）に合わせた値にし、`/api/v1` は 64k）、PHP の `post_max_size`（同じくらいの値。Sail の既定は 100M）を設定し、php-fpm の `memory_limit` を無制限にしないでください
+- そのため、**受信そのものの上限はサーバー全体に掛けます**。#14（デモ公開）で、前段の Web サーバー（nginx なら `client_max_body_size`、共有サーバーなら `.htaccess`／`php.ini` で。画面で最大のアップロード（商品の CSV の取込）に合わせた値にし、`/api/v1` は 64k）、PHP の `post_max_size`（同じくらいの値。Sail の既定は 100M）を設定し、php-fpm の `memory_limit` を無制限にしないでください
 
 ### 契約テスト
 
@@ -702,20 +703,41 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 ## テスト・静的解析
 
 ```bash
-./vendor/bin/sail test                 # Pest（テスト用データベース testing に対して実行）
-./vendor/bin/sail composer lint        # Pint（整形の確認のみ。直すときは composer lint:fix）
-./vendor/bin/sail composer analyse     # Larastan（PHPStan）
-./vendor/bin/sail npm run check        # フロントの lint・整形の確認（Vite+）
-./vendor/bin/sail npm run types:check  # フロントの型チェック（vue-tsc）
-./vendor/bin/sail npm run build        # 本番用ビルド
+./vendor/bin/sail test                       # Pest（単体・機能テスト。テスト用データベース testing に対して実行）
+./vendor/bin/sail test --testsuite=Browser   # ブラウザテスト（Pest のブラウザテスト・Playwright の Chromium）
+./vendor/bin/sail composer lint              # Pint（整形の確認のみ。直すときは composer lint:fix）
+./vendor/bin/sail composer analyse           # Larastan（PHPStan）
+./vendor/bin/sail npm run check              # フロントの lint・整形の確認（Vite+）
+./vendor/bin/sail npm run types:check        # フロントの型チェック（vue-tsc）
+./vendor/bin/sail npm run build              # 本番用ビルド
 ```
 
+- 件数（2026-10-19 時点）: 単体テスト 303 件・機能テスト 1,007 件（`sail test`）、ブラウザテスト 13 件（`sail test --testsuite=Browser`）
 - テストの並列実行（`--parallel`）には対応していません（テスト用 DB の名前を `testing` に固定して判定しているため）
 - テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時（ボリュームを作るとき）に自動で作られます。作られていない場合は `./vendor/bin/sail down -v` でボリュームを消してから起動し直します（開発用のデータも消えます）
-- CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します
+- CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します。ブラウザテストは別のジョブで実行し、失敗したときはスクリーンショット・トレース・ログを成果物として 14 日保存します
+- テストの方針（機能テスト・同時実行テスト・契約テスト・ブラウザテスト・変異で確かめたこと）は [docs/design-notes.md](docs/design-notes.md) の「テストの方針」にあります
+
+### ブラウザテスト（`tests/Browser`）
+
+- [Pest のブラウザテスト](https://pestphp.com/docs/browser-testing)（`pestphp/pest-plugin-browser`。中身は Playwright）を使います。アプリは Pest がテストのプロセスの中で起動します（既存のサーバー・`http://localhost:8089` は使いません）。DB は機能テストと同じテスト用 DB（`testing`）で、テストの前後で全テーブルを空にし、テストごとに使うデータだけをファクトリーで作ります
+- 初回だけ、Sail のコンテナに Chromium を入れます（`npm ci` の後。OS のパッケージは Sail のイメージに入っています）。画面はビルド済みのもの（`public/build`）を使うので、先に `npm run build` をしておきます
+
+```bash
+./vendor/bin/sail npx playwright install chromium
+./vendor/bin/sail npm run build
+./vendor/bin/sail test --testsuite=Browser
+```
+
+- 確かめていること: 3 ロールのログイン・ログアウト（ログアウトの後はダッシュボードを開けない）、パスワード誤りの日本語のエラー、staff の受注作成 → 確定 → 出荷で在庫画面の在庫が減る（入出庫履歴の出庫・参照元まで）、発注 → 発注済 → 入荷で在庫が増える、出荷時の在庫不足の表（必要数・現在庫・不足数）とステータス・在庫が変わらないこと、viewer に編集の操作が出ない（同じ画面を staff で開くと出ることと並べて）、viewer が編集の URL を直接開くと 403（staff は開ける。HTTP のステータスも確かめる）、admin のユーザー登録（登録したユーザーでログインできる）と操作履歴（新しい順・操作での絞り込み）、商品の CSV 出力の中身（BOM・見出し・各列の値・絞り込みの反映）、ダッシュボードの値（今月の受注額と前月比・未出荷・納期切れ・発注点割れ・入荷待ち）、スマホ幅（375px）で主な画面に横スクロールが出ない
+- ログインの試行回数の制限は無効にしていません。数える先はキャッシュ（テストでは `array`。テストごとに作り直す）で、1 つのテストのログインは多くても 3 回なので上限に当たりません
+- アプリをテストと同じプロセスで動かすため、要求の間で認証のガード・セッションの中身が残らないよう、要求ごとにリセットします（`tests/Support/ResetsRequestState.php`）
+- 画面の値の確認は、表示が変わるまで繰り返し確かめる（上限は Pest の既定の 5 秒）方法で行い、固定時間の待ちは使いません。失敗したときのスクリーンショットは `tests/Browser/Screenshots`、`--trace` を付けたときのトレースは `tests/Browser/Traces` に残ります（どちらもコミットしません）
+- 手元で実行すると、Pest が起動した Playwright のサーバー（`playwright run-server`）が実行のたびに 1 つずつコンテナに残ります（pestphp/pest-plugin-browser 5.1.2 で確認。シェル経由で起動したサーバーを止めるときに、シェルだけが終わって node が残るとみられます）。くり返し実行してメモリが足りなくなる（MySQL のコンテナが落ちる）前に、`./vendor/bin/sail exec laravel.test pkill -f "playwright run-server"` で止めます（CI はジョブの終わりに消えます）
 
 ## 開発の進め方
 
 - タスクは GitHub Issues で管理し、1 Issue = 1 ブランチ（`feat/<issue番号>-<短い名前>`）= 1 PR で進めます
-- PR は CI（Pint・Larastan・Pest・ビルド）が通り、Claude と Codex の独立したレビューの指摘に対応してからマージします
+- PR は CI（Pint・Larastan・Pest・ビルド・ブラウザテスト）が通り、Claude と Codex の独立したレビューの指摘に対応してからマージします
+- 進め方と設計の理由は [docs/design-notes.md](docs/design-notes.md) にまとめています
 - 業務仕様は [docs/spec.md](docs/spec.md)、REST API の契約は [docs/openapi.json](docs/openapi.json)（Next.js 版と共通。変更しない）を正とします

@@ -33,6 +33,7 @@
         "@types/node": "^22.13.5",
         "@vitejs/plugin-vue": "^6.0.0",
         "concurrently": "^10.0.3",
+        "playwright": "1.63.0",
         "typescript": "^5.2.2",
         "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
         "vite-plus": "0.3.3",

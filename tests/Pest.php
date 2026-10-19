@@ -1,6 +1,8 @@
 <?php
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Support\CommitsTransactions;
+use Tests\Support\ResetsRequestState;
 use Tests\TestCase;
 
 /*
@@ -17,6 +19,13 @@ use Tests\TestCase;
 pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
     ->in('Feature');
+
+// ブラウザテスト（tests/Browser）。画面からの在庫の記録（出荷・入荷）は最も外側のトランザクションとしてだけ動くので、
+// テストのトランザクションを張らずに確定させる（CommitsTransactions。テストの前後で全テーブルを空にする）。
+// アプリは同じプロセスで要求ごとに使い回されるので、要求の間で認証・セッションの状態を残さない（ResetsRequestState）
+pest()->extend(TestCase::class)
+    ->use(CommitsTransactions::class, ResetsRequestState::class)
+    ->in('Browser');
 
 /*
 |--------------------------------------------------------------------------
