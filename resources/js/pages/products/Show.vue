@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatNumber, PRODUCT_FIELD_LABELS } from '@/lib/products';
 import { deactivate, edit, index, reactivate } from '@/routes/products';
+import { show as stockShow } from '@/routes/stock';
 import type { Product } from '@/types/products';
 
 defineOptions({
@@ -98,6 +99,14 @@ function toggleActive() {
         </dl>
 
         <div class="flex flex-wrap gap-2">
+            <Button variant="outline" as-child>
+                <Link
+                    :href="stockShow(product.id)"
+                    data-test="product-stock-link"
+                >
+                    在庫・入出庫履歴
+                </Link>
+            </Button>
             <Button v-if="can('master.edit')" as-child>
                 <Link :href="edit(product.id)">編集する</Link>
             </Button>

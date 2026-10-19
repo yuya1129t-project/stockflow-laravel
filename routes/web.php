@@ -6,6 +6,7 @@ use App\Http\Controllers\ProductActivationController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductExportController;
 use App\Http\Controllers\ProductImportController;
+use App\Http\Controllers\StockController;
 use Illuminate\Support\Facades\Route;
 use Laravel\Fortify\Http\Controllers\AuthenticatedSessionController;
 
@@ -47,6 +48,13 @@ Route::middleware(['auth'])->group(function () {
         Route::put('{product}', [ProductController::class, 'update'])->whereNumber('product')->can(Permission::MasterEdit)->name('update');
         Route::post('{product}/deactivate', [ProductActivationController::class, 'deactivate'])->whereNumber('product')->can(Permission::MasterDeactivate)->name('deactivate');
         Route::post('{product}/reactivate', [ProductActivationController::class, 'reactivate'])->whereNumber('product')->can(Permission::MasterDeactivate)->name('reactivate');
+    });
+
+    // 在庫（docs/spec.md §5-7）。棚卸調整はコントローラーの Form Request でも Policy（ProductPolicy::adjustStock）で検査する
+    Route::controller(StockController::class)->prefix('stock')->name('stock.')->group(function () {
+        Route::get('/', 'index')->can(Permission::View)->name('index');
+        Route::get('{product}', 'show')->whereNumber('product')->can(Permission::View)->name('show');
+        Route::post('{product}/adjust', 'adjust')->whereNumber('product')->can(Permission::StockAdjust)->name('adjust');
     });
 });
 

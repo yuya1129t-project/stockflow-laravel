@@ -20,18 +20,21 @@ final class ProductQuery
     public const int EXPORT_MAX_ROWS = 10_000;
 
     /**
-     * 一覧（検索・並べ替え・ページ送り）。範囲外のページは最終ページに丸める
+     * 一覧（検索・並べ替え・ページ送り）。範囲外のページは最終ページに丸める。
+     * lowStockOnly は発注点割れ（有効な商品で 現在庫 < 発注点）だけに絞る（現在庫一覧 /stock の絞り込み）
      *
      * @return array{items: list<ProductItem>, total: int, page: int, totalPages: int, perPage: int}
      */
-    public function paginate(ProductListParams $params): array
+    public function paginate(ProductListParams $params, bool $lowStockOnly = false): array
     {
-        $total = $this->filtered($params)->count();
+        // 発注点割れの絞り込みは現在庫を使うので、件数も集計を結合して数える（絞り込まないときは結合しない）
+        $filtered = fn (): Builder => $lowStockOnly ? $this->onlyLowStock($this->withStock($this->filtered($params))) : $this->filtered($params);
+        $total = $filtered()->count();
         $perPage = ProductListParams::PER_PAGE;
         $totalPages = max(1, (int) ceil($total / $perPage));
         $page = min($params->page, $totalPages);
 
-        $products = $this->sorted($this->withStock($this->filtered($params)), $params)
+        $products = $this->sorted($lowStockOnly ? $filtered() : $this->withStock($filtered()), $params)
             ->forPage($page, $perPage)
             ->get();
 
@@ -123,6 +126,19 @@ final class ProductQuery
             ->select('products.*')
             ->selectRaw('CAST(COALESCE(s.stock, 0) AS SIGNED) AS stock')
             ->leftJoinSub($stock, 's', 's.product_id', '=', 'products.id');
+    }
+
+    /**
+     * 発注点割れ（有効な商品で 現在庫 < 発注点。toItem の is_low_stock と同じ定義）だけにする。withStock の後に使う
+     *
+     * @param  Builder<Product>  $query
+     * @return Builder<Product>
+     */
+    private function onlyLowStock(Builder $query): Builder
+    {
+        return $query
+            ->where('products.is_active', true)
+            ->whereRaw('COALESCE(s.stock, 0) < products.reorder_point');
     }
 
     /**

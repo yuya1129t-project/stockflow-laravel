@@ -62,6 +62,11 @@ return [
             // 接続のタイムゾーンをアプリ（Asia/Tokyo）と同じ時差にする。DB の既定値（CURRENT_TIMESTAMP）で入る日時と、
             // アプリが書き込む日時（アプリのタイムゾーンの壁時計）をそろえるため
             'timezone' => env('DB_TIMEZONE', '+09:00'),
+            // トランザクションの分離レベルを READ COMMITTED にする（MySQL の既定は REPEATABLE READ。Next.js 版の PostgreSQL の既定と同じにする）。
+            // 在庫の記録は「商品の行をロック → 入出庫を合計」の順に行う。REPEATABLE READ では、ロックより前に同じトランザクションで
+            // 普通の SELECT をしていると、ロックの後の合計が古いスナップショットになり、先に確定した出庫を見落として在庫が負になりうる
+            // （App\Stock\StockTransaction は READ COMMITTED でなければ例外にする）
+            'isolation_level' => 'READ COMMITTED',
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],

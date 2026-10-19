@@ -11,6 +11,7 @@ import {
 import { dashboard } from '@/routes';
 import { index as partnersIndex } from '@/routes/partners';
 import { index as productsIndex } from '@/routes/products';
+import { index as stockIndex } from '@/routes/stock';
 import type { NavItem } from '@/types';
 
 /**
@@ -56,10 +57,10 @@ export const mainNavItems: NavItem[] = [
     },
     {
         title: '在庫',
-        href: '/stock',
+        href: stockIndex(),
         icon: Warehouse,
         permission: 'view',
-        ready: false,
+        ready: true,
     },
     {
         title: 'ユーザー管理',
