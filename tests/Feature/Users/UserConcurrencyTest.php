@@ -27,7 +27,7 @@ function userWorker(array $payload): StockWorker
 
 function adminSetLockName(): string
 {
-    return UserService::ADMIN_SET_LOCK.':'.DB::connection()->getDatabaseName();
+    return UserService::adminSetLockName(DB::connection()->getDatabaseName());
 }
 
 afterEach(function () {

@@ -26,8 +26,9 @@ use Laravel\Sanctum\NewAccessToken;
  *   id の順に FOR UPDATE でロックし（同じユーザーへの操作（無効化とトークン発行など）を直列にする。id の順にそろえるのは、
  *   2 人の admin が互いを操作したときのデッドロックを避けるため）、actor がいまも有効な admin かを確かめ直す
  *   （認可の後に降格・無効化されていたら 403）
- * - 有効な admin が 0 人になる変更は拒否する。admin の顔ぶれを変えうる操作（ロール変更・無効化／再有効化）は、
- *   トランザクションを始める前に MySQL のユーザーロック（GET_LOCK）で直列にしてから数える。
+ * - 上の行ロックと確かめ直し（と、自分自身は変更できないこと）だけで、成功した操作の後には必ず有効な admin（操作者）が残る。
+ *   そのうえで多重の防御として、admin の顔ぶれを変えうる操作（ロール変更・無効化／再有効化）は、トランザクションを始める前に
+ *   MySQL のユーザーロック（GET_LOCK）で直列にし、有効な admin が 0 人になる変更を拒否する。
  *   行ロックだけの操作（パスワード再設定・トークン）はこのロックを待たないので、待ちが循環しない
  * - 無効化・再有効化・パスワード再設定では、対象のセッション（sessions テーブル。SESSION_DRIVER=database の前提）を削除し、
  *   「ログインしたままにする」の Cookie（remember_token）も作り直す
@@ -42,8 +43,8 @@ final class UserService
     /** 1 ユーザーが持てる有効な（失効していない）トークンの数の上限 */
     public const int MAX_ACTIVE_TOKENS_PER_USER = 10;
 
-    /** admin の顔ぶれを変えうる操作を直列にするユーザーロックの名前（DB 名を付ける。GET_LOCK はサーバー全体で共有のため） */
-    public const string ADMIN_SET_LOCK = 'stockflow:admin-set';
+    /** admin の顔ぶれを変えうる操作を直列にするユーザーロックの名前の接頭辞（adminSetLockName） */
+    public const string ADMIN_SET_LOCK = 'sf_admins_';
 
     /** そのロックを待つ上限（秒） */
     public const int ADMIN_SET_LOCK_TIMEOUT_SECONDS = 10;
@@ -261,6 +262,15 @@ final class UserService
     }
 
     /**
+     * admin の顔ぶれのユーザーロックの名前。GET_LOCK はサーバー全体で共有なので DB ごとに分ける。
+     * 名前は 64 文字までなので、DB 名はそのまま付けず md5 の先頭 16 文字にする（DB 名の長さに依存しない。26 文字）
+     */
+    public static function adminSetLockName(string $database): string
+    {
+        return self::ADMIN_SET_LOCK.substr(md5($database), 0, 16);
+    }
+
+    /**
      * admin の顔ぶれを変えうる操作を直列にする（MySQL の GET_LOCK。接続ごとのロックなので、終わったら必ず外す）。
      * トランザクションの外で呼ぶ: ロックを取ってからトランザクションを始めるので、前の操作の確定後の状態を読める
      *
@@ -272,7 +282,7 @@ final class UserService
     private function withAdminSetLock(Closure $callback): mixed
     {
         $connection = DB::connection();
-        $name = self::ADMIN_SET_LOCK.':'.$connection->getDatabaseName();
+        $name = self::adminSetLockName($connection->getDatabaseName());
         // 1: 取れた／0: 待ちの上限を過ぎた／NULL: エラー
         $acquired = $connection->scalar('SELECT GET_LOCK(?, ?)', [$name, self::ADMIN_SET_LOCK_TIMEOUT_SECONDS]);
         if ((int) $acquired !== 1) {

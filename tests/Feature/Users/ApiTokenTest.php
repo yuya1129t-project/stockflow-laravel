@@ -45,8 +45,13 @@ function callApi(?string $authorization, string $uri = '/api/_test/me'): TestRes
 {
     app('auth')->forgetGuards();
     $headers = $authorization === null ? [] : ['Authorization' => $authorization];
+    $response = test()->getJson($uri, $headers);
+    // Bearer の要求で Authenticate（auth:sanctum）が既定のガードを sanctum に切り替えたままになるので、同じテストの次の
+    // Web の要求のために web に戻す（本番はリクエストごとにアプリを作り直すので起きない）
+    app('auth')->forgetGuards();
+    app('auth')->shouldUse('web');
 
-    return test()->getJson($uri, $headers);
+    return $response;
 }
 
 describe('発行', function () {
@@ -83,10 +88,15 @@ describe('発行', function () {
         $target = User::factory()->create();
 
         $plain = $this->usingSession($session)->postJson(route('users.tokens.store', $target), ['name' => '連携'])->assertCreated()->json('token');
-        $this->usingSession($session)->get(route('users.show', $target))->assertOk();
-
         [, $secret] = explode('|', $plain, 2);
-        expect(DB::table('sessions')->get('payload')->contains(fn ($s) => str_contains(base64_decode($s->payload), $secret)))->toBeFalse();
+        $containsSecret = fn () => DB::table('sessions')->get('payload')->contains(fn ($s) => str_contains(base64_decode($s->payload), $secret));
+
+        // 発行の直後（次の要求でフラッシュが消費される前）に、操作したセッションが保存されていて、平文を含まない
+        expect(DB::table('sessions')->where('id', $session)->exists())->toBeTrue()
+            ->and($containsSecret())->toBeFalse();
+
+        $this->usingSession($session)->get(route('users.show', $target))->assertOk();
+        expect($containsSecret())->toBeFalse();
     });
 
     test('有効なトークンは 1 ユーザー 10 件まで（失効させれば発行できる）', function () {

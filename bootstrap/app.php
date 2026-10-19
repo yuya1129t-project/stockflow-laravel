@@ -9,6 +9,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
 use Illuminate\Http\Request;
+use Illuminate\Session\Middleware\AuthenticateSession;
 use Inertia\ExceptionResponse;
 use Inertia\Inertia;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -29,6 +30,9 @@ return Application::configure(basePath: dirname(__DIR__))
             HandleAppearance::class,
             // 画面に渡すログイン中のユーザー（HandleInertiaRequests）を決める前に、無効ユーザーをログアウトさせる
             EnsureUserIsActive::class,
+            // ログインした時点のパスワードのハッシュ（セッション・「ログインしたままにする」の Cookie に入る）を毎回いまの値と比べ、
+            // 違えばログアウトさせる。パスワード再設定と同時に進んでいたログインが、再設定の後に保存したセッションも拒否できる
+            AuthenticateSession::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
         ]);

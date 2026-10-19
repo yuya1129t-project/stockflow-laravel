@@ -7,7 +7,10 @@ use App\Models\User;
 use App\Users\DemoAccounts;
 use App\Users\UserService;
 use Database\Seeders\Demo\DemoData;
+use Illuminate\Auth\Events\Validated;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -408,6 +411,63 @@ describe('パスワード再設定', function () {
         '短い' => [['password' => '1234567'], 'password', '新しいパスワード は 8 文字以上で入力してください'],
         'トークンの指定が不正' => [['password' => NEW_PASSWORD, 'revoke_tokens' => 'maybe'], 'revoke_tokens', 'API トークンの失効の指定が正しくありません'],
     ]);
+});
+
+describe('ログインとパスワード再設定の競合（AuthenticateSession）', function () {
+    /**
+     * 旧パスワードの照合が通った直後（ログインがセッションを保存する前）に、admin の再設定を確定させる。
+     * ログインの照合（SessionGuard::validate）は、通ったときに Validated イベントを出す
+     */
+    function resetPasswordDuringLogin(User $admin, User $target): void
+    {
+        $done = false;
+        Event::listen(Validated::class, function (Validated $event) use (&$done, $admin, $target) {
+            if ($done || $event->user->getAuthIdentifier() !== $target->id) {
+                return;
+            }
+            $done = true;
+            app(UserService::class)->resetPassword($admin, $target->fresh(), NEW_PASSWORD, true);
+        });
+    }
+
+    test('旧パスワードで照合 → 再設定が確定 → ログインのセッションを保存 → 次の保護された要求で拒否される', function () {
+        $target = User::factory()->create(['email' => 'target@example.test']);
+        resetPasswordDuringLogin($this->admin, $target);
+
+        $session = $this->loginForSession('target@example.test', 'password');
+
+        // 再設定は確定していて、ログインのセッションはその後に保存された（再設定のセッションの削除では消えない）
+        expect(Hash::check(NEW_PASSWORD, $target->fresh()->password))->toBeTrue()
+            ->and(DB::table('sessions')->where('id', $session)->value('user_id'))->toBe($target->id);
+
+        // セッションに入っているログインの時点（旧パスワード）のハッシュが、いまの値と違うのでログアウトさせる
+        $this->dashboardWithSession($session)->assertRedirect(route('login'));
+        $this->dashboardWithSession($session)->assertRedirect(route('login'));
+        $this->loginForSession('target@example.test', NEW_PASSWORD);
+    });
+
+    test('同じ競合で作られた「ログインしたままにする」の Cookie も、次の要求で拒否される（Cookie の中のパスワードのハッシュを照合）', function () {
+        $target = User::factory()->create(['email' => 'target@example.test', 'remember_token' => null]);
+        resetPasswordDuringLogin($this->admin, $target);
+
+        $response = $this->usingSession(null)->post(route('login.store'), ['email' => 'target@example.test', 'password' => 'password', 'remember' => 'on']);
+        $response->assertRedirect(route('dashboard'));
+        $recaller = Auth::guard('web')->getRecallerName();
+        $cookie = $response->getCookie($recaller)?->getValue();
+        expect($cookie)->toBeString();
+
+        // ログインは読み込み済みの古いモデルで remember_token を作って保存するので、再設定で作り直した値を上書きしている
+        // （Cookie の token は DB と一致し、トークンの照合だけでは締め出せない）
+        [, $token] = explode('|', (string) $cookie);
+        expect($target->fresh()->getRememberToken())->toBe($token);
+
+        // セッションなし・この Cookie だけで開く: Cookie の中のパスワードのハッシュ（旧パスワード）がいまの値と違うので拒否する。
+        // この照合は Laravel 13 の SessionGuard（Cookie からの再認証）自体が行い、AuthenticateSession（viaRemember のとき）も重ねて行う
+        $this->usingSession(null);
+        $this->defaultCookies = [$recaller => $cookie];
+        $this->get(route('dashboard'))->assertRedirect(route('login'));
+        $this->assertGuest();
+    });
 });
 
 describe('デモ用アカウントの保護', function () {
