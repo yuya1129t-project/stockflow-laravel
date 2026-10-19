@@ -16,6 +16,7 @@ use LogicException;
  *   明示的に組み立てた <URL|ラベル> のリンクは verbatim でも解釈される
  * - トップレベルの text（通知のプレビュー）は verbatim を指定できないので、件数ときっかけだけ（利用者の入力を入れない）
  * - 商品名は書式（*…* など）で囲まない（名前の * _ ~ で書式が崩れないように）
+ * - 改行・制御文字は商品の入力検証（SingleLine。画面・CSV 取込で共通）が拒否している前提で、ここでは取り除かない
  *
  * @phpstan-type SlackMrkdwn array{type: 'mrkdwn', text: string, verbatim: true}
  * @phpstan-type SlackBlock array{type: 'section', text: SlackMrkdwn}|array{type: 'context', elements: list<SlackMrkdwn>}

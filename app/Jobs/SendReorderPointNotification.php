@@ -12,6 +12,7 @@ use App\Stock\StockChange;
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -23,15 +24,19 @@ use Throwable;
  *   呼び出し側は StockTransaction::run が戻った後（確定後）に投入しているので、通常はすぐに入る
  * - Webhook URL は実行のときに設定（services.reorder_notification.webhook_url）から読む（キューの jobs テーブルに URL を残さない）
  * - タイムアウト 3 秒（接続から受信の終わりまで）、リダイレクトはたどらない（3xx は HTTP エラー）。応答本文は使わない
- * - 失敗しても例外を投げない（業務処理は確定済みで、取り消さない）。送れなかったら操作履歴（action = notify_failed）に
- *   原因の種類だけを 1 回記録する。URL・応答本文・例外のメッセージは操作履歴にもログにも残さない
+ * - 送信の失敗では例外を投げない（業務処理は確定済みで、取り消さない）。送れなかったら操作履歴（action = notify_failed）に
+ *   原因の種類だけを 1 回記録する。URL・応答本文・例外のメッセージは操作履歴にもログにも failed_jobs にも残さない
+ *   （送信で出た例外は ConnectionException 以外もここで捕まえ、クラス名だけをログに出す）
+ * - handle() の外で Job が失敗したとき（想定外の例外・ワーカーのタイムアウト・試行回数の上限超過）は、failed() が
+ *   notify_failed（worker_error）を記録する。handle() は記録した後に必ず正常に戻るので、両方で記録することはない
  *
  * 再試行（同じ通知を何度も送らないため、届いていないことが確かなときだけ）:
  * - 再試行するのは、接続の前に失敗したとき（cURL 6: 名前を解決できない・7: 接続できない）と HTTP 429（Slack の流量制限。
  *   投稿されない）だけ。RETRY_DELAYS 秒あけて最大 TRIES 回まで。最後まで失敗したら notify_failed を記録する
+ * - キューが sync（または Job を直接 handle() した）ときは積み直せないので、再試行せずにすぐ notify_failed を記録する
  * - タイムアウト・5xx などのほかの失敗は再試行しない（相手が受け取って投稿した可能性があり、送り直すと二重になる）
- * - 想定外の例外（プログラムの誤り）は maxExceptions = 1 で再試行せずに失敗にする。ワーカーのタイムアウト（timeout 秒）も
- *   failOnTimeout で再試行しない
+ * - 想定外の例外（本文の組み立てなど、プログラムの誤り）は maxExceptions = 1 で再試行せずに失敗にする。ワーカーの
+ *   タイムアウト（timeout 秒）も failOnTimeout で再試行しない（どちらも failed() で記録する）
  */
 final class SendReorderPointNotification implements ShouldQueueAfterCommit
 {
@@ -109,6 +114,12 @@ final class SendReorderPointNotification implements ShouldQueueAfterCommit
             $this->recordFailure($reason);
 
             return;
+        } catch (Throwable $e) {
+            // ConnectionException 以外（想定外）。メッセージは URL を含みうるので使わない（クラス名だけ）。再試行しない
+            Log::warning('[reorder-notification] 送信に失敗しました: network_error（'.$e::class.'）');
+            $this->recordFailure(NotifyFailureReason::NetworkError);
+
+            return;
         }
 
         // 応答本文は使わない（Slack は "ok" などの短い文字列を返す）
@@ -121,6 +132,16 @@ final class SendReorderPointNotification implements ShouldQueueAfterCommit
         }
         Log::warning("[reorder-notification] 送信に失敗しました: http_error（HTTP {$status}）");
         $this->recordFailure(NotifyFailureReason::HttpError, $status);
+    }
+
+    /**
+     * handle() の外で Job が失敗した（想定外の例外・ワーカーのタイムアウト・試行回数の上限超過）。種類だけを記録する
+     * （例外のメッセージは使わない）。handle() の中で記録した場合は handle() が正常に戻るので、ここは呼ばれない
+     */
+    public function failed(?Throwable $e): void
+    {
+        Log::error('[reorder-notification] 通知の Job が失敗しました: '.($e !== null ? $e::class : '（例外なし）'));
+        $this->recordFailure(NotifyFailureReason::WorkerError);
     }
 
     /**
@@ -144,9 +165,12 @@ final class SendReorderPointNotification implements ShouldQueueAfterCommit
         }
     }
 
-    /** 再試行の回数が残っていれば、間をあけてキューに戻す（戻したら true） */
+    /** 再試行の回数が残っていれば、間をあけてキューに戻す（戻したら true）。sync・直接の handle() では積み直せないので false */
     private function retry(string $detail): bool
     {
+        if ($this->job === null || $this->job instanceof SyncJob) {
+            return false;
+        }
         $attempt = $this->attempts();
         if ($attempt >= $this->tries) {
             return false;

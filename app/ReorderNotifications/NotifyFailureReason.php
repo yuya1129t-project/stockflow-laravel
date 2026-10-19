@@ -15,6 +15,8 @@ enum NotifyFailureReason: string
     case NetworkError = 'network_error';
     /** キュー（jobs テーブル）に投入できなかった */
     case QueueError = 'queue_error';
+    /** Job が handle() の外で失敗した（想定外の例外・ワーカーのタイムアウト・試行回数の上限超過） */
+    case WorkerError = 'worker_error';
 
     public function label(): string
     {
@@ -24,6 +26,7 @@ enum NotifyFailureReason: string
             self::HttpError => 'HTTP エラー',
             self::NetworkError => '通信エラー（接続できない など）',
             self::QueueError => 'キューに投入できなかった',
+            self::WorkerError => '通知の処理が異常終了した（想定外の例外・タイムアウト・試行回数の上限）',
         };
     }
 }

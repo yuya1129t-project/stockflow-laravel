@@ -487,8 +487,8 @@ StockTransaction::run(function (StockTransaction $stock) use ($id, $expected) {
 - **利用者の入力の扱い**: 商品コード・商品名・単位は `&` `<` `>` をエスケープし、`verbatim: true` の mrkdwn（blocks）にだけ入れます（`@here`・`@channel` などのメンション化、URL のリンク化を止める）。トップレベルの `text`（通知のプレビュー。verbatim を指定できない）は件数ときっかけだけです
 - **トランザクションの確定後に投入**: 棚卸調整（`StockController::adjust`）と出荷（`SalesOrderController::changeStatus`）で、`StockTransaction::run` が戻った後に `App\ReorderNotifications\ReorderPointNotifier` が Job（`App\Jobs\SendReorderPointNotification`）を投入します。Job は `ShouldQueueAfterCommit` なので、万一トランザクションの中で投入しても、確定するまでキューに入らず、取り消されたら捨てられます。在庫不足・操作履歴の失敗などで取り消された操作では投入しません
 - **送信**: https の URL だけに、タイムアウト 3 秒（接続から受信の終わりまで）で POST します。リダイレクトはたどりません（3xx は HTTP エラー）。応答本文は使いません
-- **失敗しても業務処理は取り消しません**: 送れなかったら操作履歴（`audit_logs`、`action = notify_failed`。対象は棚卸調整なら商品、出荷なら受注）に、きっかけ・商品コード・**原因の種類だけ**（URL の設定が不正／タイムアウト／HTTP エラー（ステータス）／通信エラー／キューに投入できなかった）を記録します。Webhook URL・応答本文・例外のメッセージは操作履歴にもログにも残しません。キュー（jobs テーブル）にも URL は入れません（実行のときに設定から読む）
-- **再試行（同じ通知を何度も送らないため）**: 試行は最大 3 回（`tries = 3`）。再試行するのは、届いていないことが確かなとき（接続の前の失敗＝cURL 6 名前を解決できない・7 接続できない、HTTP 429 流量制限）だけで、10 秒・60 秒あけます。タイムアウト・5xx などは、相手が受け取って投稿した可能性があるので再試行しません。`notify_failed` は最後に 1 回だけ記録します。想定外の例外（プログラムの誤り）は `maxExceptions = 1`、ワーカーの打ち切り（30 秒）は `failOnTimeout` で、どちらも再試行しません
+- **失敗しても業務処理は取り消しません**: 送れなかったら操作履歴（`audit_logs`、`action = notify_failed`。対象は棚卸調整なら商品、出荷なら受注）に、きっかけ・商品コード・**原因の種類だけ**（URL の設定が不正／タイムアウト／HTTP エラー（ステータス）／通信エラー／キューに投入できなかった／処理の異常終了）を記録します。Webhook URL・応答本文・例外のメッセージは操作履歴にもログにも `failed_jobs` にも残しません（送信で出た例外は種類を問わず Job の中で捕まえ、ログにはクラス名だけを出します）。キュー（jobs テーブル）にも URL は入れません（実行のときに設定から読む）
+- **再試行（同じ通知を何度も送らないため）**: 試行は最大 3 回（`tries = 3`）。再試行するのは、届いていないことが確かなとき（接続の前の失敗＝cURL 6 名前を解決できない・7 接続できない、HTTP 429 流量制限）だけで、10 秒・60 秒あけます。タイムアウト・5xx などは、相手が受け取って投稿した可能性があるので再試行しません。`notify_failed` は最後に 1 回だけ記録します。キューが `sync` のとき（積み直せない）は再試行せず、すぐに記録します。想定外の例外（本文の組み立てなど、プログラムの誤り）は `maxExceptions = 1`、ワーカーの打ち切り（30 秒）は `failOnTimeout` で、どちらも再試行しません。この 2 つと試行回数の上限超過は、Job の `failed()` が `notify_failed`（処理の異常終了）を記録します（`handle()` の中で記録したときは `handle()` が正常に戻るので、二重には記録しません）
 
 ### 設定
 
@@ -499,6 +499,7 @@ STOCKFLOW_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 
 - `http://` の URL・認証情報入りの URL・URL として不正な値は使わず、通知のたびに `notify_failed`（Webhook URL の設定が不正）を記録します
 - 在庫画面へのリンクは `APP_URL`（http／https）から作ります。不正ならリンクなしで送ります
+- **本番では `APP_URL` を公開 URL にしてください**。未設定だと Laravel の既定値 `http://localhost` が使われ、Slack に localhost へのリンクが出ます
 
 ### キューのワーカー
 
@@ -518,7 +519,7 @@ STOCKFLOW_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 テストから外部へは送りません（`phpunit.xml` で `STOCKFLOW_SLACK_WEBHOOK_URL` を空に固定し、`Http::fake` で差し替えていない要求は `tests/TestCase.php` の `preventStrayRequests` で例外）。
 
 - `tests/Unit/ReorderNotifications/ReorderPointMessageTest.php`: 文面、エスケープと verbatim（`@here`・`<!channel>`・`<@U123>`・`<https://…|…>`・`&lt;` を商品名と単位に入れ、リンクあり・なしで生のまま残らない）、`text` に入力が入らない、20 件の上限と「ほか N 件」、リンクの基準・Webhook URL の検証、失敗の要約
-- `tests/Feature/ReorderNotifications/SendReorderPointNotificationTest.php`（`Http::fake`）: 成功（宛先・JSON・タイムアウト 3 秒・リダイレクトなしの設定）、HTTP エラー、リダイレクトをたどらない、タイムアウト、再試行する失敗としない失敗、最後まで失敗したら 1 回記録、URL の不正、秘密を残さない
+- `tests/Feature/ReorderNotifications/SendReorderPointNotificationTest.php`（`Http::fake`）: 成功（宛先・JSON・タイムアウト 3 秒・リダイレクトなしの設定）、HTTP エラー、リダイレクトをたどらない、タイムアウト、再試行する失敗としない失敗、最後まで失敗したら 1 回記録、sync では再試行せずすぐ記録、想定外の例外、`failed()` の記録、database のキューとワーカーで通して `failed_jobs` に残らない／二重に記録しない、URL の不正、秘密を残さない
 - `tests/Feature/ReorderNotifications/ReorderPointDispatchTest.php`: 跨いだときだけ 1 回投入（`Queue::fake`）、跨がない・無効・差分 0・未設定・入荷・出荷以外では投入しない、出荷は 1 通にまとめる、取り消された操作では投入しない、送る時点でトランザクションの外にいて別の接続から確定後の在庫が見える、送信・投入に失敗しても業務処理は残り `notify_failed` を記録、確定するまで `jobs` に入らない
 - 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 出荷の `run` の中で投入する、リダイレクトの禁止を外す、`ShouldQueueAfterCommit` を `ShouldQueue` にする
 

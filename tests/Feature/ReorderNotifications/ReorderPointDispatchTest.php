@@ -210,6 +210,7 @@ test('送信に失敗しても業務処理は取り消さず、操作履歴に n
 });
 
 test('キューへの投入に失敗しても業務処理は取り消さず、notify_failed（queue_error）を残す（例外のメッセージは残さない）', function () {
+    config(['queue.default' => 'database']);
     Bus::shouldReceive('dispatch')->once()->andThrow(new RuntimeException('jobs に書けない '.DISPATCH_TEST_WEBHOOK));
     Log::spy();
     $a = dispatchTestProduct(10, ['reorder_point' => 5, 'code' => 'P-0043']);
@@ -225,6 +226,16 @@ test('キューへの投入に失敗しても業務処理は取り消さず、no
             'summary' => "発注点割れの通知を送信できませんでした（受注 {$order->number} の出荷・商品 P-0043）。原因: キューに投入できなかった",
         ]);
     Log::shouldHaveReceived('error')->once()->with('[reorder-notification] 通知をキューに投入できませんでした: RuntimeException');
+});
+
+test('キューが sync のとき、Bus::dispatch から出た例外（handle() の例外。Job の failed() が記録済み）を queue_error にしない', function () {
+    Bus::shouldReceive('dispatch')->once()->andThrow(new RuntimeException('handle() の例外 '.DISPATCH_TEST_WEBHOOK));
+    Log::spy();
+    $changes = [new StockChange(new StockProduct(1, 'P-0001', '商品A', '個', 5, true, 8), 8, 3)];
+
+    expect(app(ReorderPointNotifier::class)->notify($changes, ReorderPointTrigger::stockAdjust(1), null))->toBeTrue()
+        ->and(AuditLog::query()->count())->toBe(0);
+    Log::shouldHaveReceived('error')->once()->with('[reorder-notification] 通知の Job が失敗しました（sync）: RuntimeException');
 });
 
 test('Job は確定するまでキュー（jobs テーブル）に入らない。トランザクションが取り消されたら捨てる（ShouldQueueAfterCommit）', function () {

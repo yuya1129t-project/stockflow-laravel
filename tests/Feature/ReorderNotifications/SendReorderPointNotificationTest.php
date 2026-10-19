@@ -10,6 +10,11 @@ use App\Stock\StockProduct;
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use Illuminate\Queue\MaxAttemptsExceededException;
+use Illuminate\Queue\TimeoutExceededException;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -213,3 +218,76 @@ test('受注の出荷の通知の失敗は、受注を対象に記録する', fu
         'summary' => '発注点割れの通知を送信できませんでした（受注 SO-20261019-007 の出荷・商品 P-0007）。原因: HTTP エラー（500）',
     ]);
 });
+
+test('キューが sync・直接の handle() では再試行できないので、cURL 6・7／429 でもすぐに notify_failed を記録する（「再試行します」と出さない）', function (array|Closure $fake, string $cause, bool $viaSyncQueue) {
+    Http::fake($fake);
+    Log::spy();
+
+    // phpunit.xml のキューは sync（SyncJob で動く）
+    $viaSyncQueue ? Bus::dispatch(reorderJob($this->user->id)) : reorderJob($this->user->id)->handle();
+
+    expect(AuditLog::query()->sole()->summary)->toEndWith("原因: {$cause}");
+    Log::shouldNotHaveReceived('warning', [Mockery::on(fn (string $m) => str_contains($m, '再試行'))]);
+})->with([
+    '接続できない' => [fn () => fn () => throw new ConnectionException('cURL error 7: Failed to connect for '.REORDER_TEST_WEBHOOK), '通信エラー（接続できない など）'],
+    'HTTP 429' => [fn () => ['*' => Http::response('rate_limited', 429)], 'HTTP エラー（429）'],
+])->with(['sync のキュー' => [true], '直接の handle()' => [false]]);
+
+test('送信で ConnectionException 以外の例外が出ても投げずに network_error を記録する（ログはクラス名だけ。URL を含むメッセージは残さない）', function () {
+    Http::fake(fn () => throw new RuntimeException('想定外の失敗 '.REORDER_TEST_WEBHOOK));
+    Log::spy();
+
+    reorderJob($this->user->id)->handle();
+
+    expect(AuditLog::query()->sole()->summary)->toEndWith('原因: 通信エラー（接続できない など）');
+    expectNoSecretsInAuditLogs();
+    Log::shouldHaveReceived('warning')->once()->with('[reorder-notification] 送信に失敗しました: network_error（RuntimeException）');
+});
+
+test('database のキューとワーカーで動かす: 送信の失敗は handle() で 1 回だけ記録し、failed_jobs に残さない（URL も残さない）', function (array|Closure $fake, string $cause) {
+    Http::fake($fake);
+
+    Bus::dispatch(reorderJob($this->user->id)->onConnection('database'));
+    Artisan::call('queue:work', ['connection' => 'database', '--once' => true]);
+
+    expect(DB::table('jobs')->count())->toBe(0)
+        ->and(DB::table('failed_jobs')->count())->toBe(0)
+        ->and(AuditLog::query()->sole()->summary)->toEndWith("原因: {$cause}");
+    expectNoSecretsInAuditLogs();
+})->with([
+    'HTTP 500' => [fn () => ['*' => Http::response('応答の本文 SECRET-TOKEN', 500)], 'HTTP エラー（500）'],
+    '想定外の例外' => [fn () => fn () => throw new RuntimeException('想定外の失敗 '.REORDER_TEST_WEBHOOK), '通信エラー（接続できない など）'],
+]);
+
+test('handle() の外で失敗したら（想定外の例外・タイムアウト・試行回数の上限）、failed() が worker_error を 1 回記録する', function () {
+    Http::fake();
+    // 本文の組み立てで例外（通知する商品がない＝プログラムの誤り）。送信の try の外なので handle() から投げられる
+    $job = new SendReorderPointNotification([], ReorderPointTrigger::stockAdjust(7), $this->user->id);
+
+    Bus::dispatch($job->onConnection('database'));
+    Artisan::call('queue:work', ['connection' => 'database', '--once' => true]);
+
+    Http::assertNothingSent();
+    expect(DB::table('failed_jobs')->count())->toBe(1)
+        ->and(DB::table('failed_jobs')->value('exception'))->toStartWith('LogicException: 通知する商品がありません')
+        ->and(AuditLog::query()->sole()->only(['action', 'target_type', 'target_id', 'summary']))->toBe([
+            'action' => 'notify_failed',
+            'target_type' => 'product',
+            'target_id' => '7',
+            'summary' => '発注点割れの通知を送信できませんでした（棚卸調整・商品 ）。原因: 通知の処理が異常終了した（想定外の例外・タイムアウト・試行回数の上限）',
+        ]);
+});
+
+test('failed(): 例外のメッセージは使わず、種類だけを記録する（ログはクラス名だけ）', function (?Throwable $e, string $logged) {
+    Log::spy();
+
+    reorderJob($this->user->id)->failed($e);
+
+    expect(AuditLog::query()->sole()->summary)->toBe('発注点割れの通知を送信できませんでした（棚卸調整・商品 P-0007）。原因: 通知の処理が異常終了した（想定外の例外・タイムアウト・試行回数の上限）');
+    expectNoSecretsInAuditLogs();
+    Log::shouldHaveReceived('error')->once()->with("[reorder-notification] 通知の Job が失敗しました: {$logged}");
+})->with([
+    'タイムアウト' => [fn () => new TimeoutExceededException('timed out '.REORDER_TEST_WEBHOOK), 'Illuminate\Queue\TimeoutExceededException'],
+    '試行回数の上限' => [fn () => new MaxAttemptsExceededException('too many attempts '.REORDER_TEST_WEBHOOK), 'Illuminate\Queue\MaxAttemptsExceededException'],
+    '例外なし' => [null, '（例外なし）'],
+]);
