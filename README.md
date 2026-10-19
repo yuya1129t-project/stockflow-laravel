@@ -319,25 +319,32 @@ erDiagram
 入出庫の記録は共通の部品 `App\Stock\StockTransaction` だけで行います（棚卸調整のほか、#7 発注の入荷・#8 受注の出荷・#11 発注点割れの通知から使います）。
 
 ```php
-$result = StockTransaction::run(function (StockTransaction $stock) use ($order, $user, $entries) {
+$result = StockTransaction::run(function (StockTransaction $stock) use ($orderId, $user, $entries) {
     $products = $stock->lockProducts($productIds); // 対象の全商品を一度に。有効などの検査はこの結果で
-    // … 伝票の更新（同じトランザクション）
+    // … 伝票の更新（同じトランザクション）: UPDATE … WHERE id = ? AND status = ? の件数で。モデルはこの中で取り直す
     return $stock->record($user->id, $entries);    // list<StockEntry>。不足なら InsufficientStockException で全体を取り消す
 });
-// 確定の後で $result->fellBelowReorderPoint（発注点以上 → 未満に変わった有効な商品）を通知する
+// run が戻った時点で確定済み。ここで $result->fellBelowReorderPoint（発注点以上 → 未満に変わった有効な商品）を通知する
 ```
 
 - 現在庫は入出庫の合計で、在庫数の列は持ちません。「合計を確かめてから出庫を INSERT」をそのまま行うと、同時の出庫が両方とも確認を通って在庫が負になるため、記録の前に**対象商品の `products` の行を id の順に `SELECT … FOR UPDATE`（`lockForUpdate()`）でロック**してから合計を読みます。同じ商品を扱う処理はここで順番待ちになり、後の処理は先の記録を含めた在庫で判定します
 - 複数の商品（受注の全明細など）を一度に記録できます。同じ商品の行は合算して判定し、1 商品でも足りなければ、不足する商品と数量を持つ `InsufficientStockException` を投げて全体を取り消します。数量の符号（in は正・out は負・adjust は 0 以外）と参照元（`ref_type`・`ref_id` の両方あり／両方なし）は `StockEntry` を作るときに検査します（DB の CHECK 制約と同じ規則）
-- **分離レベルは READ COMMITTED** です（`config/database.php` の `isolation_level`。MySQL の既定は REPEATABLE READ）。REPEATABLE READ では、ロックより前に同じトランザクションで普通の SELECT（伝票を読むなど）をしていると、ロックの後の合計がそのときのスナップショットのままになり、先に確定した出庫を見落として在庫が負になります（InnoDB で確認。分離レベルを戻すと同時実行のテストが落ちます）。`run` は READ COMMITTED でなければ例外にします
-- トランザクションの外からは記録できません。`StockTransaction` は `run` の中でしか作れず（コンストラクターは private）、コールバックの外へ持ち出して使う・`run` を入れ子にする・同じトランザクションで別の商品のロックをあとから追加する、はいずれも例外です
+- **分離レベルは READ COMMITTED** です。`run` は試行のたびに、BEGIN の直前に `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` を出します（接続の既定も `config/database.php` の `isolation_level` で READ COMMITTED。MySQL の既定は REPEATABLE READ）。REPEATABLE READ では、ロックより前に同じトランザクションで普通の SELECT（伝票を読むなど）をしていると、ロックの後の合計がそのときのスナップショットのままになり、先に確定した出庫を見落として在庫が負になります（InnoDB で確認。直前に次のトランザクションだけを REPEATABLE READ にしても、`run` のトランザクションが READ COMMITTED になることをテストで確かめています）
+- **`run` は最も外側のトランザクションとしてだけ呼べます**（ほかのトランザクションの中・`run` の中で呼ぶと例外）。伝票の更新など、同じトランザクションで書くものはすべてコールバックの中に書きます。`run` が戻った時点で確定しているので、通知はその後で送ります
+- トランザクションの外からは記録できません。`StockTransaction` は `run` の中でしか作れず（コンストラクターは private）、コールバックの外へ持ち出して使う・同じトランザクションで別の商品のロックをあとから追加する、はいずれも例外です
 - **MySQL には PostgreSQL の `FOR NO KEY UPDATE` がありません**。そのため `FOR UPDATE` は、明細（`sales_order_lines` など）の INSERT の外部キー検査が商品の行に取る共有ロックとも競合し、明細を入力の順番で INSERT する処理と交差するとデッドロックします（InnoDB で再現。負けるのは在庫の側）。対策は 2 つです
-    1. `run` はデッドロック・ロック待ちのタイムアウトのとき、コールバックごと 3 回まで再試行します（最も外側のトランザクションのとき。コールバックの中では通知・外部 API などの DB 以外の副作用を起こさない）
+    1. `run` はデッドロック（1213）のとき、コールバックごと 3 回まで再試行します。ロック待ちのタイムアウト（1205）は再試行せず、棚卸調整では「混み合っているため、調整できませんでした…もう一度実行してください」を返します。ロック待ちの上限は、`run` の間だけセッション単位で 10 秒にします（MySQL の既定は 50 秒。終わったら元に戻す）
     2. 明細を書く処理（#7・#8 の伝票の作成・編集）は、明細を INSERT する前に、明細の全商品の行を id の順に `SELECT … FOR SHARE` でまとめてロックします。こうすればデッドロックしません（テストで確認）
 - 同じトランザクションで、`lockProducts`／`record` より前に商品の行に共有ロック（`FOR SHARE`・明細の INSERT）を取らないでください。共有ロックを持った 2 本が排他ロックへの引き上げを互いに待ってデッドロックします。明細も書くなら「`lockProducts`（全商品）→ 伝票・明細の書き込み → `record`」の順にします（排他ロックを持っていれば外部キー検査は待ちません）
+- 再試行ではコールバックが 2 回以上動きます（DB はロールバックされますが、PHP の変数・モデルの状態は戻りません）。そのため
+    - コールバックの外で取得した Eloquent モデルを、コールバックの中で書き換えて `save` しないでください（2 回目は「変更なし」として UPDATE が出ず、伝票の更新だけが消えます）。伝票は `UPDATE … WHERE id = ? AND status = ?` の件数で更新するか、コールバックの中で `lockForUpdate()` で取り直してから更新します
+    - DB の外の副作用（通知・外部 API・メール・キューへの投入）はコールバックの中で起こさず、`run` が戻った後で行います
 - 商品の行をロックするほかの処理（商品の編集・CSV 取込）も、対象を一度に id の順でロックしています
 
-同時実行のテスト（`tests/Feature/Stock/StockConcurrencyTest.php`）は、記録・棚卸調整を別プロセス（`tests/Support/stock-worker.php`）の別の MySQL 接続で動かし、**後の側がロック待ちに入ったことを `performance_schema.data_lock_waits` で確かめてから**先の側を確定させます（固定時間の待ちを証拠にしません。10 秒待っても入らなければ失敗）。確かめているのは、同じ商品の同時出庫で負にならない、4 本の順番待ち、逆の順番の複数商品でデッドロックしない、棚卸調整との競合、明細の INSERT との交差（再試行で成功／`FOR SHARE` を先に取ればデッドロックしない）です。ロックを外す・id の順をやめる・再試行をやめる・REPEATABLE READ に戻す、のそれぞれで該当するテストが落ちることを確かめています。
+同時実行のテスト（`tests/Feature/Stock/StockConcurrencyTest.php`）は、記録・棚卸調整を別プロセス（`tests/Support/stock-worker.php`）の別の MySQL 接続で動かし、**後の側がロック待ちに入ったことを `performance_schema.data_lock_waits` で確かめてから**先の側を確定させます（固定時間の待ちを証拠にしません。10 秒待っても入らなければ失敗）。確かめているのは、同じ商品の同時出庫で負にならない、4 本の順番待ち、逆の順番の複数商品でデッドロックしない、棚卸調整との競合、明細の INSERT との交差（再試行で成功／`FOR SHARE` を先に取ればデッドロックしない）、入出庫と操作履歴を書いた後のデッドロック（再試行の後に 1 回分だけ残る）です。ロックを外す・id の順をやめる・再試行をやめる・REPEATABLE READ に戻す・外側のトランザクションを許す・ロック待ちのタイムアウトも再試行する、のそれぞれで該当するテストが落ちることを確かめています。
+
+- `run` は最も外側でしか動かないため、在庫を記録するテスト（`tests/Feature/Stock/StockTransactionTest.php`・`StockPagesTest.php`）はテストのトランザクション（RefreshDatabase）を張らずに実際に確定させ、テストの前後で全テーブルを空にします（`Tests\Support\CommitsTransactions`）
+- 同時実行テストのワーカーは DB 名を `testing` に固定しているので、`--parallel` には対応していません（テスト全体も並列には対応していません）
 
 - `performance_schema` を読むため、観測用の接続だけ MySQL の root で接続します（Sail の root のパスワードは `DB_PASSWORD` と同じ。CI は元から root）。別のユーザーにするときは `DB_LOCK_OBSERVER_USERNAME`・`DB_LOCK_OBSERVER_PASSWORD` を設定します
 
