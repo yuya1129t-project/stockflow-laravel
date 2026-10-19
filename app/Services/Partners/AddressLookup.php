@@ -5,21 +5,23 @@ namespace App\Services\Partners;
 use App\Rules\SingleLine;
 use App\Support\Partners\PostalCode;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Throwable;
 
 /**
  * 郵便番号 → 住所（zipcloud。docs/spec.md §6）。外部 API はブラウザから直接呼ばず、サーバー側のここから呼ぶ。
  *
  * - API: https://zipcloud.ibsnet.co.jp/doc/api （GET /api/search?zipcode=…。読み取りのみ）
  * - タイムアウト 3 秒（接続から本文の受信まで）。宛先は固定で、リダイレクトはたどらない（3xx は失敗）
+ * - 本文は 64KB まで。受信しながら数え、超えたらその時点で受信を打ち切る（Content-Length のない応答・chunked も同じ）
  * - 失敗・該当なし・形式エラーは理由付きの結果を返し、例外にしない（画面は「住所を手入力してください」と出す）
  * - 外部の応答は型・件数・長さ・制御文字・問い合わせた郵便番号との一致を検証してから使う
  * - 郵便番号ごとの結果（住所・該当なし）を Laravel の Cache に 1 日保存する。一時的な失敗（タイムアウトなど）は保存しない
- * - 失敗の原因はサーバーのログに残す（郵便番号・利用者の情報は含めない）
- * - テストでは Http::fake で差し替える（CI から実 API を呼ばない。tests/Pest.php で preventStrayRequests）
+ * - 失敗の原因はサーバーのログに残す。記録するのは決まった形の短い値だけ（HTTP ステータス、cURL のエラー番号、
+ *   妥当な範囲の整数の status）で、外部の応答の文字列・例外のメッセージ・郵便番号・利用者の情報は出さない
+ * - テストでは Http::fake で差し替える（CI から実 API を呼ばない。tests/TestCase.php で preventStrayRequests）
  */
 class AddressLookup
 {
@@ -39,6 +41,11 @@ class AddressLookup
 
     /** 候補の件数の上限 */
     private const int MAX_RESULTS = 100;
+
+    /**
+     * @param  string  $endpoint  呼び出す先（本番は zipcloud 固定。テストで受信の打ち切りを確かめるときだけローカルのサーバーを渡す）
+     */
+    public function __construct(private readonly string $endpoint = self::ENDPOINT) {}
 
     public static function cacheKey(string $postalCode): string
     {
@@ -76,16 +83,38 @@ class AddressLookup
     /** zipcloud を呼ぶ（キャッシュなし） */
     private function fetch(string $postalCode): AddressLookupResult
     {
+        $tooLarge = false;
         try {
             $response = Http::timeout(self::TIMEOUT_SECONDS)
                 ->connectTimeout(self::TIMEOUT_SECONDS)
                 ->withoutRedirecting()
                 ->acceptJson()
-                ->get(self::ENDPOINT, ['zipcode' => $postalCode]);
-        } catch (ConnectionException $e) {
-            $timeout = preg_match('/cURL error 28|timed out/i', $e->getMessage()) === 1;
+                ->withOptions([
+                    // 受信の途中で呼ばれる。Content-Length が上限を超えるか、受信した量が上限を超えたら true を返して打ち切る
+                    // （ヘッダーのない応答・chunked も受信した量で止まる）
+                    'progress' => function (int $downloadTotal, int $downloaded) use (&$tooLarge): bool {
+                        $tooLarge = $tooLarge || $downloadTotal > self::MAX_BODY_BYTES || $downloaded > self::MAX_BODY_BYTES;
 
-            return $this->fail($timeout ? AddressLookupFailure::Timeout : AddressLookupFailure::Unavailable, $postalCode, $e);
+                        return $tooLarge;
+                    },
+                ])
+                ->get($this->endpoint, ['zipcode' => $postalCode]);
+        } catch (ConnectionException|RequestException $e) {
+            if ($tooLarge) {
+                return $this->fail(AddressLookupFailure::InvalidResponse, $postalCode, '応答が大きすぎます');
+            }
+            if ($e instanceof RequestException) {
+                // 受信の途中で失敗した、エラーの HTTP ステータスの応答
+                return $this->fail(AddressLookupFailure::Unavailable, $postalCode, "HTTP {$e->response->status()}");
+            }
+            $curlError = self::curlErrorNumber($e->getMessage());
+            $timeout = $curlError === 28;
+
+            return $this->fail(
+                $timeout ? AddressLookupFailure::Timeout : AddressLookupFailure::Unavailable,
+                $postalCode,
+                $curlError !== null ? "cURL error {$curlError}" : '通信エラー',
+            );
         }
 
         if ($response->status() !== 200) {
@@ -100,7 +129,13 @@ class AddressLookup
         $decoded = json_decode($body, true);
         $result = self::parse($postalCode, $decoded);
         if (! $result->ok() && $result->failure !== AddressLookupFailure::NotFound) {
-            $status = is_array($decoded) && is_scalar($decoded['status'] ?? null) ? (string) $decoded['status'] : '（なし）';
+            // 外部の値は、妥当な範囲の整数のときだけ記録する（文字列などは決まった識別子にする）
+            $status = is_array($decoded) ? ($decoded['status'] ?? null) : null;
+            $status = match (true) {
+                $status === null => '（なし）',
+                is_int($status) && $status >= 100 && $status <= 599 => (string) $status,
+                default => '（不正な値）',
+            };
 
             return $this->fail($result->failure ?? AddressLookupFailure::InvalidResponse, $postalCode, "応答の status: {$status}");
         }
@@ -156,12 +191,18 @@ class AddressLookup
         return $addresses === [] ? $invalid : AddressLookupResult::found($postalCode, $addresses);
     }
 
-    /** 失敗の原因をログに残す（郵便番号・利用者の情報は含めない。利用者への表示は決まった文言だけ） */
-    private function fail(AddressLookupFailure $failure, string $postalCode, Throwable|string $detail): AddressLookupResult
+    /** 例外のメッセージから cURL のエラー番号だけを取り出す（メッセージ自体は URL などを含むので記録しない） */
+    private static function curlErrorNumber(string $message): ?int
     {
-        $detail = $detail instanceof Throwable ? $detail::class.': '.$detail->getMessage() : $detail;
-        // 例外のメッセージには URL（郵便番号を含む）が入ることがあるので伏せる
-        $detail = str_replace($postalCode, '*******', $detail);
+        return preg_match('/cURL error (\d{1,3})\b/', $message, $m) === 1 ? (int) $m[1] : null;
+    }
+
+    /**
+     * 失敗の原因をログに残す。$detail はこのクラスが組み立てた決まった形の短い値だけ（外部の文字列を入れない）。
+     * 利用者への表示は決まった文言だけ（AddressLookupFailure::message）
+     */
+    private function fail(AddressLookupFailure $failure, string $postalCode, string $detail): AddressLookupResult
+    {
         Log::warning("[address-lookup] zipcloud の呼び出しに失敗しました: {$failure->value}（{$detail}）");
 
         return AddressLookupResult::failed($failure, $postalCode);

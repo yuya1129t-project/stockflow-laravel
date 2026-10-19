@@ -7,6 +7,7 @@ use App\Http\Requests\PartnerRequest;
 use App\Models\Partner;
 use App\Models\User;
 use App\Services\Partners\AddressLookup;
+use App\Services\Partners\AddressLookupRateLimiter;
 use App\Services\Partners\PartnerService;
 use App\Support\Partners\PartnerListFilters;
 use App\Support\Partners\PostalCode;
@@ -14,7 +15,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Facades\RateLimiter;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -23,13 +23,6 @@ use Inertia\Response;
  */
 class PartnerController extends Controller
 {
-    /** 住所検索の回数制限（ユーザーごと。1 分に 30 回まで） */
-    public const int ADDRESS_LOOKUP_LIMIT = 30;
-
-    public const int ADDRESS_LOOKUP_WINDOW_SECONDS = 60;
-
-    public const string ADDRESS_LOOKUP_RATE_LIMIT_MESSAGE = '住所の検索回数が多すぎます。しばらくしてからもう一度お試しいただくか、住所を手入力してください';
-
     public function __construct(private readonly PartnerService $partners) {}
 
     public function index(Request $request): Response
@@ -130,21 +123,21 @@ class PartnerController extends Controller
      * 応答: 200 { postalCode, addresses } ／ 400 形式エラー ／ 404 該当なし ／ 429 回数超過 ／ 502 失敗・不正な応答 ／ 504 タイムアウト。
      * 失敗時の本文は { message: 日本語のメッセージ（「住所を手入力してください」を含む）, reason }
      */
-    public function addressLookup(Request $request, AddressLookup $lookup): JsonResponse
+    public function addressLookup(Request $request, AddressLookup $lookup, AddressLookupRateLimiter $limiter): JsonResponse
     {
         $user = $this->actor($request);
         Gate::authorize('lookupAddress', Partner::class);
         $headers = ['Cache-Control' => 'no-store'];
 
-        $key = "address-lookup:user:{$user->id}";
-        if (RateLimiter::tooManyAttempts($key, self::ADDRESS_LOOKUP_LIMIT)) {
+        // 権限の検査の後に数える（権限のない要求は数えない）。ユーザーごとに 1 分 30 回まで
+        $retryAfter = $limiter->attempt($user->id);
+        if ($retryAfter !== null) {
             return response()->json(
-                ['message' => self::ADDRESS_LOOKUP_RATE_LIMIT_MESSAGE, 'reason' => 'rate_limited'],
+                ['message' => AddressLookupRateLimiter::MESSAGE, 'reason' => 'rate_limited'],
                 429,
-                [...$headers, 'Retry-After' => (string) max(1, RateLimiter::availableIn($key))],
+                [...$headers, 'Retry-After' => (string) $retryAfter],
             );
         }
-        RateLimiter::hit($key, self::ADDRESS_LOOKUP_WINDOW_SECONDS);
 
         $input = $request->query('postal_code');
         $result = $lookup->lookup(is_string($input) ? mb_substr($input, 0, 20) : '');

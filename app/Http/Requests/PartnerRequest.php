@@ -18,6 +18,8 @@ use Illuminate\Validation\Rule;
  * - 取引先コードは大文字に揃える（c-0001 と C-0001 を別の取引先にしない）。一意
  * - 郵便番号はハイフン有無・全角を受け付け、ハイフンなしの 7 桁で保存する
  * - 電話番号は全角を半角にし、0 から始まる 10〜11 桁の数字（ハイフンは任意）
+ * - メールアドレスは RFC の厳密な検査（email:rfc,strict。ドメインに「.」のないもの・空白やコメントを含むものは不可）。
+ *   DNS の検査（email:dns）は外部通信になるので使わない
  * - 権限は Policy（PartnerPolicy）で、検証より先に検査する（ルートの can: と二重）
  */
 class PartnerRequest extends FormRequest
@@ -77,7 +79,7 @@ class PartnerRequest extends FormRequest
             'postal_code' => ['bail', 'nullable', 'string', 'regex:/^\d{7}\z/'],
             'address' => ['bail', 'nullable', 'string', 'max:'.self::MAX['address'], new SingleLine],
             'phone' => ['bail', 'nullable', 'string', 'max:'.self::MAX['phone'], $this->phoneRule()],
-            'email' => ['bail', 'nullable', 'string', 'max:'.self::MAX['email'], 'email'],
+            'email' => ['bail', 'nullable', 'string', 'max:'.self::MAX['email'], new SingleLine, 'email:rfc,strict'],
         ];
     }
 

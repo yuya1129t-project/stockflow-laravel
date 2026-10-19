@@ -1,11 +1,13 @@
 <?php
 
 use App\Enums\PartnerKind;
+use App\Http\Requests\PartnerRequest;
 use App\Models\AuditLog;
 use App\Models\Partner;
 use App\Models\PurchaseOrder;
 use App\Models\SalesOrder;
 use App\Models\User;
+use Illuminate\Support\Facades\Validator;
 use Inertia\Testing\AssertableInertia as Assert;
 
 /** 取引先の登録・編集・無効化（入力検証・一意・種別の変更・操作履歴・トランザクション。docs/spec.md §3・§8） */
@@ -107,8 +109,25 @@ describe('登録', function () {
         '電話番号が 0 始まりでない' => [['phone' => '3-1234-56789'], 'phone', '電話番号は 0 から始まる 10〜11 桁の数字で入力してください（ハイフンは任意。例 03-1234-5678）'],
         '電話番号に文字' => [['phone' => '03-1234-567a'], 'phone', '電話番号は 0 から始まる 10〜11 桁の数字で入力してください（ハイフンは任意。例 03-1234-5678）'],
         'メールの形式' => [['email' => 'info@'], 'email', 'メールアドレスの形式が正しくありません（例 info@example.com）'],
+        'メールのドメインに「.」がない' => [['email' => 'info@example'], 'email', 'メールアドレスの形式が正しくありません（例 info@example.com）'],
+        'メールに引用符と空白' => [['email' => '"a b"@example.com'], 'email', 'メールアドレスの形式が正しくありません（例 info@example.com）'],
+        'メールにコメント' => [['email' => 'a(c)@example.com'], 'email', 'メールアドレスの形式が正しくありません（例 info@example.com）'],
+        'メールに行区切り（途中）' => [['email' => "info\u{2028}@example.com"], 'email', 'メールアドレス に改行・タブなどの制御文字は使えません'],
+        'メールのドメインに行区切り' => [['email' => "a@b.c\u{2028}om"], 'email', 'メールアドレス に改行・タブなどの制御文字は使えません'],
         '文字列でない値' => [['name' => ['a']], 'name', '取引先名 は文字列で入力してください'],
     ]);
+
+    test('メールの末尾の行区切り（U+2028）は、前後の空白と同じく取り除いて保存する。規則そのものは制御文字として拒否する', function () {
+        $staff = User::factory()->staff()->create();
+
+        $this->actingAs($staff)->post(route('partners.store'), partnerInput(['email' => "a@b.com\u{2028}"]))->assertSessionHasNoErrors();
+
+        expect(Partner::query()->sole()->email)->toBe('a@b.com');
+        // ミドルウェア（TrimStrings）を通らない値でも、検証の規則で拒否する
+        $rules = (new PartnerRequest)->rules();
+        expect(Validator::make(['email' => "a@b.com\u{2028}"], ['email' => $rules['email']])->fails())->toBeTrue();
+        expect(Validator::make(['email' => 'a@b.com'], ['email' => $rules['email']])->fails())->toBeFalse();
+    });
 });
 
 describe('編集', function () {

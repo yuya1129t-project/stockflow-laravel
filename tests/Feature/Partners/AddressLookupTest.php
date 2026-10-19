@@ -1,9 +1,9 @@
 <?php
 
-use App\Http\Controllers\PartnerController;
 use App\Models\User;
 use App\Services\Partners\AddressLookup;
 use App\Services\Partners\AddressLookupFailure;
+use App\Services\Partners\AddressLookupRateLimiter;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -55,17 +55,19 @@ test('admin も使える。1 つの郵便番号に複数の町域があれば候
         ->assertExactJson(['postalCode' => '0000001', 'addresses' => ['デモ県サンプル市北町', 'デモ県サンプル市南町']]);
 });
 
-test('該当なしは 404 と「住所を手入力してください」', function () {
-    Http::fake([AddressLookup::ENDPOINT.'*' => Http::response(zipcloudBody([]))]);
+test('該当なしは 404 と「住所を手入力してください」', function (array $body) {
+    Http::fake([AddressLookup::ENDPOINT.'*' => Http::response($body)]);
 
     lookupAs(null)->assertNotFound()->assertExactJson([
         'message' => '該当する住所が見つかりませんでした。住所を手入力してください',
         'reason' => 'not_found',
     ]);
 
-    Http::fake([AddressLookup::ENDPOINT.'*' => Http::response(['message' => null, 'results' => null, 'status' => 200])]);
-    lookupAs(null, '000-0002')->assertNotFound();
-});
+    Http::assertSentCount(1);
+})->with([
+    'results が空の配列' => [['message' => null, 'results' => [], 'status' => 200]],
+    'results が null' => [['message' => null, 'results' => null, 'status' => 200]],
+]);
 
 test('郵便番号の形式が違えば 400 で、外部 API は呼ばない', function (string $input) {
     Http::fake();
@@ -150,6 +152,47 @@ test('不正な応答は 502（型・件数・長さ・制御文字・郵便番�
     '候補が多すぎる' => [zipcloudBody(array_fill(0, 101, ['zipcode' => '0310001', 'address1' => '青森県', 'address2' => '八戸市', 'address3' => '類家']))],
 ]);
 
+test('ログには決まった形の短い値だけを出す（外部の文字列・別の郵便番号・制御文字を出さない）', function (Closure $fake, string $expected) {
+    Http::fake([AddressLookup::ENDPOINT.'*' => $fake()]);
+    $logged = [];
+    Log::listen(function ($event) use (&$logged) {
+        $logged[] = $event->message;
+    });
+
+    lookupAs(null);
+
+    expect($logged)->toBe(["[address-lookup] zipcloud の呼び出しに失敗しました: {$expected}"]);
+})->with([
+    'status が改行と別の郵便番号を含む文字列' => [
+        fn () => Http::response(['status' => "500\n[error] 1000001 forged", 'results' => null]),
+        'invalid_response（応答の status: （不正な値））',
+    ],
+    'status が範囲外の整数' => [
+        fn () => Http::response(['status' => 99999999, 'results' => null]),
+        'unavailable（応答の status: （不正な値））',
+    ],
+    '住所に制御文字（status は 200）' => [
+        fn () => Http::response(zipcloudBody([['zipcode' => '0310001', 'address1' => "青森県\u{202E}1000001", 'address2' => "\n", 'address3' => '']])),
+        'invalid_response（応答の status: 200）',
+    ],
+    '問い合わせと違う郵便番号の結果' => [
+        fn () => Http::response(zipcloudBody([['zipcode' => '1000001', 'address1' => '東京都', 'address2' => '千代田区', 'address3' => '千代田']])),
+        'invalid_response（応答の status: 200）',
+    ],
+    '本文が JSON でない' => [
+        fn () => Http::response("<html>\n1000001</html>"),
+        'invalid_response（応答の status: （なし））',
+    ],
+    '例外のメッセージに URL・改行を含む' => [
+        fn () => Http::failedConnection("cURL error 7: Failed to connect\n to zipcloud.ibsnet.co.jp?zipcode=0310001 1000001"),
+        'unavailable（cURL error 7）',
+    ],
+    'cURL のエラー番号がない例外' => [
+        fn () => Http::failedConnection("something \u{2028} went wrong 1000001"),
+        'unavailable（通信エラー）',
+    ],
+]);
+
 test('結果は郵便番号ごとにキャッシュし、同じ郵便番号では外部 API を呼ばない（該当なしもキャッシュする）', function () {
     Http::fake([
         AddressLookup::ENDPOINT.'?zipcode=0310001' => Http::response(zipcloudBody()),
@@ -186,7 +229,7 @@ test('回数制限: ユーザーごとに 1 分 30 回まで。超えたら 429 
     Http::fake([AddressLookup::ENDPOINT.'*' => Http::response(zipcloudBody())]);
     $staff = User::factory()->staff()->create();
 
-    foreach (range(1, PartnerController::ADDRESS_LOOKUP_LIMIT) as $i) {
+    foreach (range(1, AddressLookupRateLimiter::LIMIT) as $i) {
         lookupAs($staff)->assertOk();
     }
 
