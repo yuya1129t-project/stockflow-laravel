@@ -9,11 +9,13 @@ import {
     Warehouse,
 } from '@lucide/vue';
 import { dashboard } from '@/routes';
+import { index as auditLogsIndex } from '@/routes/audit-logs';
 import { index as partnersIndex } from '@/routes/partners';
 import { index as productsIndex } from '@/routes/products';
 import { index as purchaseOrdersIndex } from '@/routes/purchase-orders';
 import { index as salesOrdersIndex } from '@/routes/sales-orders';
 import { index as stockIndex } from '@/routes/stock';
+import { index as usersIndex } from '@/routes/users';
 import type { NavItem } from '@/types';
 
 /**
@@ -66,17 +68,17 @@ export const mainNavItems: NavItem[] = [
     },
     {
         title: 'ユーザー管理',
-        href: '/users',
+        href: usersIndex(),
         icon: Users,
         permission: 'user.manage',
-        ready: false,
+        ready: true,
     },
     {
         title: '操作履歴',
-        href: '/audit-logs',
+        href: auditLogsIndex(),
         icon: History,
         permission: 'audit.view',
-        ready: false,
+        ready: true,
     },
 ];
 
