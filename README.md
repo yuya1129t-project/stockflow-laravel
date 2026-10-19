@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml)
 
-> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知、ダッシュボード、外部向け REST API まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
+> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知、ダッシュボード、外部向け REST API、ブラウザテストまで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
 
 ## このリポジトリについて
 
@@ -12,6 +12,7 @@
 - 要件・方針の決定と公開の判断は本人が行い、設計・実装・コードレビュー（Claude と Codex の独立したレビュー）・指摘への対応は Claude Code が行っています。本人は成果物を確認しています
 - **データはすべて架空です**（実在の会社・人物・取引とは関係ありません）
 - [Next.js 版（stockflow-next）](https://github.com/yuya1129t-project/stockflow-next) と **同じ業務仕様**（[docs/spec.md](docs/spec.md)）・**同じ REST API 仕様**（[docs/openapi.json](docs/openapi.json)）で実装します
+- 設計の理由と確かめ方（MVC・Eloquent・権限・N+1・在庫引当・テストの方針・開発の進め方）は [docs/design-notes.md](docs/design-notes.md) にまとめています
 
 ## 主な機能
 
@@ -36,7 +37,7 @@
 | 画面           | Laravel 公式 Vue スターターキット（Inertia 3＋Vue 3＋TypeScript＋Tailwind CSS 4） |
 | 認証           | Laravel Fortify（スターターキット同梱）                                           |
 | データベース   | MySQL 8.4                                                                         |
-| テスト         | Pest                                                                              |
+| テスト         | Pest（ブラウザテストは Pest のブラウザテスト＋Playwright の Chromium）            |
 | 静的解析・整形 | Larastan（PHPStan level 7）／Pint／Vite+（フロントの lint・整形）／vue-tsc        |
 | CI             | GitHub Actions（MySQL サービスに対してテスト）                                    |
 | ローカル環境   | Laravel Sail（Docker Compose）                                                    |
@@ -474,7 +475,7 @@ StockTransaction::run(function (StockTransaction $stock) use ($id, $expected) {
 
 - `tests/Feature/SalesOrders/SalesOrderTest.php`: 作成（採番・金額・明細・操作履歴・単価の初期値）、入力検証、顧客の種別・無効、無効な商品、編集（下書きのみ・競合・同じ時刻の 2 回の保存・実在しない version）、一覧・並べ替え・CSV、権限、ステータス変更（明細 0 行で確定できない・最終状態・競合）、操作履歴の失敗で全体を取り消す
 - `tests/Feature/SalesOrders/SalesOrderShipTest.php`: 出荷で在庫が減る・参照元、在庫不足で全体を中止（1 行だけ不足でも他の行を記録しない・状態・updated_at・操作履歴が変わらない・不足の表・補充すれば出荷できる）、発注点割れに変わった商品を返す、最終状態・取消の後は出荷できない、競合・実在しない version、操作履歴の失敗で出庫も取り消す、無効な顧客・商品でも出荷できる、viewer は 403
-- `tests/Feature/SalesOrders/SalesOrderConcurrencyTest.php`（別プロセスのワーカー `tests/Support/sales-order-worker.php`。後の側のロック待ちを `performance_schema.data_lock_waits` で確かめてから先を確定）: 同時作成で番号が重複しない、同じ受注の同時の 2 回の出荷で出庫は 1 回、別々の受注が同じ商品を同時に出荷して在庫が負にならない、明細の順番が逆の 2 受注の同時出荷でデッドロックしない、取引先の種別変更と作成（どちらが先でも）、商品の無効化と作成、作成と在庫の記録、出荷と取消、明細 0 行にする編集と確定、確定と編集、同時の 2 本の編集
+- `tests/Feature/SalesOrders/SalesOrderConcurrencyTest.php`（別プロセスのワーカー `tests/Support/sales-order-worker.php`。後の側のロック待ちを `performance_schema.data_lock_waits` で確かめてから先を確定）: 同時作成で番号が重複しない、同じ受注の同時の 2 回の出荷で出庫は 1 回、別々の受注が同じ商品を同時に出荷して在庫が負にならない、明細の順番が逆の 2 受注の同時出荷でデッドロックしない、取引先の種別変更と作成（どちらが先でも）、商品の無効化と作成、作成と在庫の記録、出荷と取消、明細 0 行にする編集と確定、確定と編集、同時の 2 本の編集、出荷がデッドロックの負け側になっても再試行（2 回目）で出荷でき出庫・操作履歴は 1 回分だけ、出荷のロック待ちのタイムアウト（1205）は再試行せず「混み合っています」（受注・在庫・操作履歴は変わらない）。同時の在庫不足では負け側の updated_at・操作履歴も変わらないことを確かめます
 - 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 出荷を「読んでから更新」にする、出荷の条件から updated_at を外す、明細ごとに `record` を呼ぶ、出荷で商品を明細の順にロックする、在庫の記録の商品のロックを外す、確定・取消の受注のロックを外す、編集の受注のロックを外す、顧客の FOR SHARE を外す、編集・ステータス変更の updated_at の比較を外す
 
 ## ユーザー管理・API トークン・操作履歴
@@ -702,20 +703,40 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 ## テスト・静的解析
 
 ```bash
-./vendor/bin/sail test                 # Pest（テスト用データベース testing に対して実行）
-./vendor/bin/sail composer lint        # Pint（整形の確認のみ。直すときは composer lint:fix）
-./vendor/bin/sail composer analyse     # Larastan（PHPStan）
-./vendor/bin/sail npm run check        # フロントの lint・整形の確認（Vite+）
-./vendor/bin/sail npm run types:check  # フロントの型チェック（vue-tsc）
-./vendor/bin/sail npm run build        # 本番用ビルド
+./vendor/bin/sail test                       # Pest（単体・機能テスト。テスト用データベース testing に対して実行）
+./vendor/bin/sail test --testsuite=Browser   # ブラウザテスト（Pest のブラウザテスト・Playwright の Chromium）
+./vendor/bin/sail composer lint              # Pint（整形の確認のみ。直すときは composer lint:fix）
+./vendor/bin/sail composer analyse           # Larastan（PHPStan）
+./vendor/bin/sail npm run check              # フロントの lint・整形の確認（Vite+）
+./vendor/bin/sail npm run types:check        # フロントの型チェック（vue-tsc）
+./vendor/bin/sail npm run build              # 本番用ビルド
 ```
 
+- 件数（2026-10-19 時点）: 単体テスト 303 件・機能テスト 1,007 件（`sail test`）、ブラウザテスト 13 件（`sail test --testsuite=Browser`）
 - テストの並列実行（`--parallel`）には対応していません（テスト用 DB の名前を `testing` に固定して判定しているため）
 - テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時（ボリュームを作るとき）に自動で作られます。作られていない場合は `./vendor/bin/sail down -v` でボリュームを消してから起動し直します（開発用のデータも消えます）
-- CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します
+- CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します。ブラウザテストは別のジョブで実行し、失敗したときはスクリーンショット・トレース・ログを成果物として 14 日保存します
+- テストの方針（機能テスト・同時実行テスト・契約テスト・ブラウザテスト・変異で確かめたこと）は [docs/design-notes.md](docs/design-notes.md) の「テストの方針」にあります
+
+### ブラウザテスト（`tests/Browser`）
+
+- [Pest のブラウザテスト](https://pestphp.com/docs/browser-testing)（`pestphp/pest-plugin-browser`。中身は Playwright）を使います。アプリは Pest がテストのプロセスの中で起動します（既存のサーバー・`http://localhost:8089` は使いません）。DB は機能テストと同じテスト用 DB（`testing`）で、テストの前後で全テーブルを空にし、テストごとに使うデータだけをファクトリーで作ります
+- 初回だけ、Sail のコンテナに Chromium を入れます（`npm ci` の後。OS のパッケージは Sail のイメージに入っています）。画面はビルド済みのもの（`public/build`）を使うので、先に `npm run build` をしておきます
+
+```bash
+./vendor/bin/sail npx playwright install chromium
+./vendor/bin/sail npm run build
+./vendor/bin/sail test --testsuite=Browser
+```
+
+- 確かめていること: 3 ロールのログイン・ログアウト（ログアウトの後はダッシュボードを開けない）、パスワード誤りの日本語のエラー、staff の受注作成 → 確定 → 出荷で在庫画面の在庫が減る（入出庫履歴の出庫・参照元まで）、発注 → 発注済 → 入荷で在庫が増える、出荷時の在庫不足の表（必要数・現在庫・不足数）とステータス・在庫が変わらないこと、viewer に編集の操作が出ない（同じ画面を staff で開くと出ることと並べて）、viewer が編集の URL を直接開くと 403（staff は開ける。HTTP のステータスも確かめる）、admin のユーザー登録（登録したユーザーでログインできる）と操作履歴（新しい順・操作での絞り込み）、商品の CSV 出力の中身（BOM・見出し・各列の値・絞り込みの反映）、ダッシュボードの値（今月の受注額と前月比・未出荷・納期切れ・発注点割れ・入荷待ち）、スマホ幅（375px）で主な画面に横スクロールが出ない
+- ログインの試行回数の制限は無効にしていません。数える先はキャッシュ（テストでは `array`。テストごとに作り直す）で、1 つのテストのログインは多くても 3 回なので上限に当たりません
+- アプリをテストと同じプロセスで動かすため、要求の間で認証のガード・セッションの中身が残らないよう、要求ごとにリセットします（`tests/Support/ResetsRequestState.php`）
+- 画面の値の確認は、表示が変わるまで繰り返し確かめる（上限は Pest の既定の 5 秒）方法で行い、固定時間の待ちは使いません。失敗したときのスクリーンショットは `tests/Browser/Screenshots`、`--trace` を付けたときのトレースは `tests/Browser/Traces` に残ります（どちらもコミットしません）
 
 ## 開発の進め方
 
 - タスクは GitHub Issues で管理し、1 Issue = 1 ブランチ（`feat/<issue番号>-<短い名前>`）= 1 PR で進めます
-- PR は CI（Pint・Larastan・Pest・ビルド）が通り、Claude と Codex の独立したレビューの指摘に対応してからマージします
+- PR は CI（Pint・Larastan・Pest・ビルド・ブラウザテスト）が通り、Claude と Codex の独立したレビューの指摘に対応してからマージします
+- 進め方と設計の理由は [docs/design-notes.md](docs/design-notes.md) にまとめています
 - 業務仕様は [docs/spec.md](docs/spec.md)、REST API の契約は [docs/openapi.json](docs/openapi.json)（Next.js 版と共通。変更しない）を正とします
