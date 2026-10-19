@@ -6,6 +6,8 @@ use App\Http\Controllers\ProductActivationController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductExportController;
 use App\Http\Controllers\ProductImportController;
+use App\Http\Controllers\PurchaseOrderController;
+use App\Http\Controllers\PurchaseOrderExportController;
 use App\Http\Controllers\StockController;
 use Illuminate\Support\Facades\Route;
 use Laravel\Fortify\Http\Controllers\AuthenticatedSessionController;
@@ -48,6 +50,18 @@ Route::middleware(['auth'])->group(function () {
         Route::put('{product}', [ProductController::class, 'update'])->whereNumber('product')->can(Permission::MasterEdit)->name('update');
         Route::post('{product}/deactivate', [ProductActivationController::class, 'deactivate'])->whereNumber('product')->can(Permission::MasterDeactivate)->name('deactivate');
         Route::post('{product}/reactivate', [ProductActivationController::class, 'reactivate'])->whereNumber('product')->can(Permission::MasterDeactivate)->name('reactivate');
+    });
+
+    // 発注（docs/spec.md §4・§5-6）。コントローラー・Form Request でも Policy（PurchaseOrderPolicy）で検査する
+    Route::prefix('purchase-orders')->name('purchase-orders.')->group(function () {
+        Route::get('/', [PurchaseOrderController::class, 'index'])->can(Permission::View)->name('index');
+        Route::get('create', [PurchaseOrderController::class, 'create'])->can(Permission::OrderEdit)->name('create');
+        Route::post('/', [PurchaseOrderController::class, 'store'])->can(Permission::OrderEdit)->name('store');
+        Route::get('export', PurchaseOrderExportController::class)->can(Permission::CsvExport)->name('export');
+        Route::get('{purchaseOrder}', [PurchaseOrderController::class, 'show'])->whereNumber('purchaseOrder')->can(Permission::View)->name('show');
+        Route::get('{purchaseOrder}/edit', [PurchaseOrderController::class, 'edit'])->whereNumber('purchaseOrder')->can(Permission::OrderEdit)->name('edit');
+        Route::put('{purchaseOrder}', [PurchaseOrderController::class, 'update'])->whereNumber('purchaseOrder')->can(Permission::OrderEdit)->name('update');
+        Route::post('{purchaseOrder}/status', [PurchaseOrderController::class, 'changeStatus'])->whereNumber('purchaseOrder')->can(Permission::OrderEdit)->name('status');
     });
 
     // 在庫（docs/spec.md §5-7）。棚卸調整はコントローラーの Form Request でも Policy（ProductPolicy::adjustStock）で検査する

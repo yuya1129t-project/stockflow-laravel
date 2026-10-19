@@ -1,0 +1,99 @@
+<?php
+
+namespace App\PurchaseOrders;
+
+use App\Enums\PurchaseOrderStatus;
+use DateTimeImmutable;
+
+/**
+ * 発注一覧の検索条件（URL のクエリ）。一覧画面と CSV 出力で同じ解釈をする（Next.js 版 src/lib/purchase-orders/search-params.ts と同じ）。
+ * 不正な値は既定値に置き換える（エラーにしない）
+ */
+final readonly class PurchaseOrderListParams
+{
+    /** 並べ替えのキー（URL の値） */
+    public const array SORT_KEYS = ['orderDate', 'number', 'supplier', 'expectedDate', 'total'];
+
+    public const int PER_PAGE = 20;
+
+    /** 検索語の最大長（これより長い部分は切り捨てる） */
+    private const int MAX_QUERY_LENGTH = 100;
+
+    /**
+     * @param  string  $q  発注番号の部分一致
+     * @param  int|null  $supplierId  仕入先（null ならすべて）
+     * @param  PurchaseOrderStatus|null  $status  ステータス（null ならすべて）
+     * @param  string  $from  発注日の範囲（YYYY-MM-DD。空なら制限なし。両端を含む）
+     * @param  value-of<self::SORT_KEYS>  $sort
+     * @param  'asc'|'desc'  $order
+     * @param  int  $page  1 始まり
+     */
+    public function __construct(
+        public string $q = '',
+        public ?int $supplierId = null,
+        public ?PurchaseOrderStatus $status = null,
+        public string $from = '',
+        public string $to = '',
+        public string $sort = 'orderDate',
+        public string $order = 'desc',
+        public int $page = 1,
+    ) {}
+
+    /** @param  array<array-key, mixed>  $query */
+    public static function fromQuery(array $query): self
+    {
+        $q = $query['q'] ?? null;
+        $supplier = $query['supplier'] ?? null;
+        $status = $query['status'] ?? null;
+        $sort = $query['sort'] ?? null;
+        $order = $query['order'] ?? null;
+        $page = $query['page'] ?? null;
+
+        return new self(
+            q: is_string($q) && mb_check_encoding($q, 'UTF-8') ? mb_substr(mb_trim($q), 0, self::MAX_QUERY_LENGTH) : '',
+            supplierId: is_string($supplier) && preg_match('/^[1-9][0-9]{0,8}$/', $supplier) === 1 ? (int) $supplier : null,
+            status: is_string($status) ? PurchaseOrderStatus::tryFrom($status) : null,
+            from: self::date($query['from'] ?? null),
+            to: self::date($query['to'] ?? null),
+            sort: is_string($sort) && in_array($sort, self::SORT_KEYS, true) ? $sort : 'orderDate',
+            order: $order === 'asc' ? 'asc' : 'desc',
+            page: is_string($page) && preg_match('/^[1-9][0-9]{0,8}$/', $page) === 1 ? (int) $page : 1,
+        );
+    }
+
+    public function withPage(int $page): self
+    {
+        return new self($this->q, $this->supplierId, $this->status, $this->from, $this->to, $this->sort, $this->order, $page);
+    }
+
+    /**
+     * 画面に渡す検索条件
+     *
+     * @return array{q: string, supplier: string, status: string, from: string, to: string, sort: string, order: string, page: int}
+     */
+    public function toArray(): array
+    {
+        return [
+            'q' => $this->q,
+            'supplier' => $this->supplierId === null ? '' : (string) $this->supplierId,
+            'status' => $this->status->value ?? '',
+            'from' => $this->from,
+            'to' => $this->to,
+            'sort' => $this->sort,
+            'order' => $this->order,
+            'page' => $this->page,
+        ];
+    }
+
+    /** 実在する日付（YYYY-MM-DD）だけを残す */
+    private static function date(mixed $value): string
+    {
+        if (! is_string($value)) {
+            return '';
+        }
+        $value = trim($value);
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+
+        return $date !== false && $date->format('Y-m-d') === $value ? $value : '';
+    }
+}

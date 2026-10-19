@@ -11,6 +11,7 @@ import {
     formatSignedNumber,
     formatStockRef,
     STOCK_MOVEMENT_TYPE_LABELS,
+    stockRefHref,
 } from '@/lib/stock';
 import { cn } from '@/lib/utils';
 import { show as productShow } from '@/routes/products';
@@ -263,7 +264,17 @@ const pageHref = (n: number) =>
                             <td
                                 class="hidden px-3 py-2 font-mono whitespace-nowrap md:table-cell"
                             >
-                                {{ formatStockRef(m.ref) }}
+                                <Link
+                                    v-if="stockRefHref(m.ref)"
+                                    :href="stockRefHref(m.ref) ?? ''"
+                                    class="underline-offset-4 hover:underline"
+                                    data-test="stock-movement-ref"
+                                >
+                                    {{ formatStockRef(m.ref) }}
+                                </Link>
+                                <template v-else>
+                                    {{ formatStockRef(m.ref) }}
+                                </template>
                             </td>
                             <td class="hidden px-3 py-2 md:table-cell">
                                 {{ m.user_name ?? '—' }}

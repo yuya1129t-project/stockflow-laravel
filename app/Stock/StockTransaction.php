@@ -75,6 +75,9 @@ final class StockTransaction
     /** コールバックの実行中だけ true */
     private bool $open = true;
 
+    /** 実行中の run のコールバックの数（inProgress。伝票の FOR SHARE のロックとの併用を拒否するため） */
+    private static int $running = 0;
+
     /** @var list<int>|null 最初にロックした商品（この後のロックはこの範囲に限る） */
     private ?array $lockedIds = null;
 
@@ -112,10 +115,12 @@ final class StockTransaction
                 try {
                     return $connection->transaction(function () use ($callback, $connection) {
                         $stock = new self($connection, $connection->transactionLevel());
+                        self::$running++;
                         try {
                             return $callback($stock);
                         } finally {
                             $stock->open = false;
+                            self::$running--;
                         }
                     });
                 } catch (PDOException $e) {
@@ -128,6 +133,16 @@ final class StockTransaction
         } finally {
             $connection->statement('SET SESSION innodb_lock_wait_timeout = ?', [$previousTimeout]);
         }
+    }
+
+    /**
+     * 在庫を記録するトランザクション（run のコールバック）の実行中か。
+     * 伝票の明細の商品を FOR SHARE でロックする部品（App\Orders\OrderLocks::lockProductsForLines）が、在庫を記録する
+     * トランザクションの中で呼ばれたら拒否するために使う（共有ロック → 排他ロックの引き上げでデッドロックするため）
+     */
+    public static function inProgress(): bool
+    {
+        return self::$running > 0;
     }
 
     /** デッドロック（1213）か */

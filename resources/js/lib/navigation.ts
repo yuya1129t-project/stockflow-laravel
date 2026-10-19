@@ -11,6 +11,7 @@ import {
 import { dashboard } from '@/routes';
 import { index as partnersIndex } from '@/routes/partners';
 import { index as productsIndex } from '@/routes/products';
+import { index as purchaseOrdersIndex } from '@/routes/purchase-orders';
 import { index as stockIndex } from '@/routes/stock';
 import type { NavItem } from '@/types';
 
@@ -50,10 +51,10 @@ export const mainNavItems: NavItem[] = [
     },
     {
         title: '発注',
-        href: '/purchase-orders',
+        href: purchaseOrdersIndex(),
         icon: Truck,
         permission: 'view',
-        ready: false,
+        ready: true,
     },
     {
         title: '在庫',
