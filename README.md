@@ -669,8 +669,9 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 
 - アプリでは、`Content-Length` の申告が 65,536 バイトを超えれば本文を読まずに 413、申告がなくても上限 + 1 バイトまでしか読まずに 413 にします（`App\Api\V1\ApiJsonBody`）
 - PHP の `post_max_size` を超える `Content-Length` の申告は、Laravel の `ValidatePostSize`（全体のミドルウェア）が認証より前に 413 にします（本文は読みません。形は同じ problem+json）
-- ただし PHP では、**本文の受信は PHP の SAPI（`artisan serve`・php-fpm）がアプリの処理の前に終えています**（さらに Laravel の `Request::capture` が JSON の本文を先に読み込みます）。Next.js 版のように、受信の途中で打ち切って接続を切ることはアプリではできません。実際に `artisan serve` に 20MB を chunked で送ると、認証なしの 401 でも受信に約 1 秒かかります
-- そのため、**受信そのものの上限は Web サーバーと PHP の設定で掛けます**。#14（AWS でのデモ公開）で、前段の Web サーバー（nginx なら `/api/v1` に `client_max_body_size 64k`）と PHP の `post_max_size`（Sail の既定は 100M）を設定してください
+- ただし PHP では、**本文の受信は PHP の SAPI（`artisan serve`・php-fpm）がアプリの処理の前に終えています**（さらに Laravel の `Request::capture` が JSON の本文を先に読み込みます）。Next.js 版のように、受信の途中で打ち切って接続を切ることはアプリではできません
+- 認証より前のコストは、本文の形で大きく変わります。Laravel の全体のミドルウェア `TrimStrings`・`ConvertEmptyStringsToNull` は JSON の全要素を走査するので、**`/api/v1` ではこの 2 つを外しています**（`bootstrap/app.php`。API は本文とクエリを生のまま自前で読むため）。`artisan serve` で、要素の多い本文（`[1,1,…]` の 1,200 万要素・24MB）をトークンなしで POST したときの 401 までの時間は、外す前が 17.6 秒、外した後が 2.5 秒でした（残りは受信と `Request::capture` の JSON のデコード）。**`/login` など `/api/v1` 以外のパスには、外す前と同じコストが残ります**
+- そのため、**受信そのものの上限はサーバー全体に掛けます**。#14（AWS でのデモ公開）で、前段の Web サーバー（nginx なら `client_max_body_size` をサーバー全体に。画面で最大のアップロード（商品の CSV の取込）に合わせた値にし、`/api/v1` は 64k）、PHP の `post_max_size`（同じくらいの値。Sail の既定は 100M）を設定し、php-fpm の `memory_limit` を無制限にしないでください
 
 ### 契約テスト
 
@@ -681,10 +682,11 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
     - 認証: 各エンドポイントのヘッダーなし、形式違い・存在しない・失効済み・持ち主が無効などがすべて同じ 401、スキーム名の大文字・小文字、実際のログインの Cookie だけでは 401（Cookie と viewer のトークンなら 403）、認証の前に本文を読まない、ロールの変更が次の要求から効く
     - 一覧: 件数・並び・全ロール・検索（ワイルドカードにしない）・ページの境界・不正なクエリ。受注一覧の絞り込みは、受注日の一覧の 1/3 と 2/3 の位置の日を境界にして、`from`・`to` のどちらを無視しても件数が合わなくなる条件（0 件・全件でないことを先に確かめる）で確かめます。並びは、同じ日の受注を番号の大きい順に作って、作成の順ではなく番号の順であることを確かめます
     - POST: 画面から 1 件作った次の番号で採番・単価は売価・金額・明細・操作履歴（経路とトークンの ID）・詳細の API と同じ内容、400（35 通り。各ケースで、openapi.json のスキーマにも違反するもの（型・必須など）と、業務の検証（画面と同じ検証・サービス）だけで拒否するものを区別して確かめる）、415、413（上限ちょうどは読んで検証に進み、1 バイト超えると 413。Content-Length の申告だけでも 413）、405（Allow）、未定義のパスの 404、`/api/v1/openapi.json` が docs/openapi.json と同じバイト列
+    - 引用符のない巨大な整数（`9223372036854775808`）を文字列の項目に送ると 400（JSON の型のまま検査する）、エンコードした接頭辞（`/%61pi/v1/...`・`/api/%761/...`）でも 401・403・404・405 が problem+json（判定はルートの照合と同じデコードしたパス）、`/api/v1` の外の画面・JSON の応答は変わらない、`TrimStrings`・`ConvertEmptyStringsToNull` は `/api/v1` だけで外れている
 - `tests/Unit/Api/OpenApiContractTest.php`: 検証器が食い違い（内部の ID の追加・必須の欠落・型・日時の形式・範囲外の日付・定義にないステータス・Content-Type・ヘッダーの欠落など 17 通り）を実際に検出すること
 - `tests/Unit/Api/SalesOrderCreateBodyTest.php`: 本文・クエリの上限（文字数・行数・数量・ページ・本文の大きさ）と日付の範囲が openapi.json の値と同じこと
 - `tests/Feature/Api/ApiDocsTest.php`: `/api-docs` がログインなしで開け、Cookie を発行しない、SRI 付きの版固定の CDN、CSP（スクリプトは CDN のパスと初期化スクリプトのハッシュだけ・`unsafe-eval` なし・`connect-src 'self'`）、ほかの画面に CSP を付けない
-- 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: `to` を無視する、`from` のときに空を返す、一覧に内部の id を出す、日時の形式を変える、受注の並びを作成の順にする、範囲外のページを丸める、クエリの NUL を見ない、Content-Length を見ない、読みながらの上限を外す、`WWW-Authenticate`・`Accept-Post` を付けない、操作履歴に経路を残さない、余分な項目を見ない、problem の Content-Type を `application/json` にする、GET の権限をルートで見ない、405 を Laravel の既定の描画にする、Sanctum の `guard` を `web` にする
+- 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: `to` を無視する、`from` のときに空を返す、一覧に内部の id を出す、日時の形式を変える、受注の並びを作成の順にする、範囲外のページを丸める、クエリの NUL を見ない、Content-Length を見ない、読みながらの上限を外す、`WWW-Authenticate`・`Accept-Post` を付けない、操作履歴に経路を残さない、余分な項目を見ない、problem の Content-Type を `application/json` にする、GET の権限をルートで見ない、405 を Laravel の既定の描画にする、Sanctum の `guard` を `web` にする、`JSON_BIGINT_AS_STRING` でデコードする、API の範囲をデコード前のパスで判定する、`TrimStrings`・`ConvertEmptyStringsToNull` を `/api/v1` でも通す
 
 ### /api-docs（Swagger UI）
 

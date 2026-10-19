@@ -166,8 +166,13 @@ final class SalesOrderCreateBody
             return null;
         }
         $value = $fields[$name];
-        // JSON の 1.0 も整数（JSON Schema の integer）。範囲外の大きな整数は JSON_BIGINT_AS_STRING で文字列になり、型違いになる
-        if (is_float($value) && is_finite($value) && floor($value) === $value && abs($value) < 1e15) {
+        // JSON の 1.0 も整数（JSON Schema の integer）。PHP の整数を超える巨大な整数は float で届くので、整数のまま範囲外として拒否する
+        if (is_float($value) && is_finite($value) && floor($value) === $value) {
+            if (abs($value) >= 1e15) {
+                $this->error($path, $value > 0 ? number_format($max).' 以下で指定してください' : "{$min} 以上で指定してください");
+
+                return null;
+            }
             $value = (int) $value;
         }
         if (! is_int($value)) {

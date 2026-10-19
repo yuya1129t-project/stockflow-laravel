@@ -66,11 +66,13 @@ final class ApiJsonBody
         }
 
         try {
-            $value = json_decode($text, false, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
+            // JSON の型を保つ（JSON_BIGINT_AS_STRING は使わない。引用符のない巨大な整数が文字列になり、文字列の項目の型検査を通ってしまう。
+            // PHP の整数を超える数値は float になり、数量などの整数の項目では範囲外として拒否する）
+            $value = json_decode($text, false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
             // PHP のオブジェクトは NUL で始まるキーを持てない（JSON_ERROR_INVALID_PROPERTY_NAME）。配列として読み直して位置を示す
             if ($e->getCode() === JSON_ERROR_INVALID_PROPERTY_NAME) {
-                $assoc = json_decode($text, true, 512, JSON_BIGINT_AS_STRING);
+                $assoc = json_decode($text, true);
                 $pointers = self::nulPointers($assoc);
                 if ($pointers !== []) {
                     self::abortWithNul($pointers);

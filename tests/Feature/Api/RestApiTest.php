@@ -15,9 +15,13 @@ use App\Models\User;
 use App\Orders\OrderAmounts;
 use App\SalesOrders\SalesOrderService;
 use Carbon\CarbonImmutable;
+use Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull;
+use Illuminate\Foundation\Http\Middleware\TrimStrings;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Testing\TestResponse;
+use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
 use Tests\Support\OpenApiContract;
 use Tests\Support\SessionRequests;
 
@@ -720,6 +724,25 @@ describe('POST /api/v1/sales-orders', function () {
         'UTF-8 として正しくない' => ["{\"customerCode\": \"\xFF\"}", '本文が UTF-8 として正しくありません'],
     ]);
 
+    test('引用符のない巨大な整数は文字列の項目に通さない（JSON の型のまま検査する）・数量は範囲外', function (string $raw, string $pointer, string $detail) {
+        $before = restApiOrderCount();
+
+        $body = restApiProblem('post', '/api/v1/sales-orders', restApi('POST', '/api/v1/sales-orders', [
+            'token' => $this->tokens['staff'],
+            'headers' => ['Content-Type' => 'application/json'],
+            'raw' => $raw,
+        ]), 400);
+
+        expect($body['errors'])->toBe([['pointer' => $pointer, 'detail' => $detail]])
+            ->and(restApiOrderCount())->toBe($before);
+    })->with([
+        '顧客コード' => ['{"customerCode":9223372036854775808,"lines":[{"productCode":"ZA-P001","quantity":1}]}', '#/customerCode', '文字列で指定してください'],
+        '商品コード' => ['{"customerCode":"ZA-C001","lines":[{"productCode":9223372036854775808,"quantity":1}]}', '#/lines/0/productCode', '文字列で指定してください'],
+        '備考' => ['{"customerCode":"ZA-C001","note":9223372036854775808,"lines":[{"productCode":"ZA-P001","quantity":1}]}', '#/note', '文字列で指定してください'],
+        '数量' => ['{"customerCode":"ZA-C001","lines":[{"productCode":"ZA-P001","quantity":9223372036854775808}]}', '#/lines/0/quantity', '9,999,999 以下で指定してください'],
+        '数量（負）' => ['{"customerCode":"ZA-C001","lines":[{"productCode":"ZA-P001","quantity":-9223372036854775809}]}', '#/lines/0/quantity', '1 以上で指定してください'],
+    ]);
+
     test('Content-Type が JSON（UTF-8）でなければ 415（Accept-Post: application/json）', function (string $contentType) {
         $before = restApiOrderCount();
         $response = restApi('POST', '/api/v1/sales-orders', [
@@ -802,6 +825,45 @@ describe('定義していないメソッド・パス', function () {
         ['POST', '/api/v1/nope'],
         ['GET', '/api/v1/products/ZA-P001'],
         ['GET', '/api/v1/products/ZA-P001/stock/x'],
+    ]);
+});
+
+describe('API の範囲の判定（デコードしたパス）と全体のミドルウェア', function () {
+    test('エンコードした接頭辞でもルートに一致し、RFC 9457 の形で返す（401・403・404・405）', function () {
+        restApiOk('get', '/api/v1/products', restApi('GET', '/%61pi/v1/products', ['token' => $this->tokens['viewer']]));
+
+        $unauthorized = restApi('GET', '/%61pi/v1/products');
+        expect($unauthorized->headers->get('WWW-Authenticate'))->toBe('Bearer realm="StockFlow API"');
+        restApiProblem('get', '/api/v1/products', $unauthorized, 401);
+        restApiProblem('post', '/api/v1/sales-orders', restApi('POST', '/api/%761/sales-orders', ['token' => $this->tokens['viewer'], 'body' => restApiValidBody()]), 403);
+        restApiUndocumentedProblem(restApi('GET', '/%61pi/v1/nope', ['token' => $this->tokens['viewer']]), 404);
+        $notAllowed = restApi('PUT', '/api/%761/products', ['token' => $this->tokens['viewer']]);
+        restApiUndocumentedProblem($notAllowed, 405);
+        expect($notAllowed->headers->get('Allow'))->toBe('GET, HEAD');
+    });
+
+    test('/api/v1 の外（画面・JSON の要求・似たパス）はこれまでどおりの応答', function () {
+        $this->get('/dashboard')->assertRedirect(route('login'));
+        $this->getJson('/dashboard')->assertUnauthorized()->assertExactJson(['message' => 'ログインが必要です'])
+            ->assertHeader('Content-Type', 'application/json')->assertHeaderMissing('WWW-Authenticate');
+        $similar = $this->getJson('/api/v1x/products')->assertNotFound();
+        expect($similar->headers->get('Content-Type'))->toBe('application/json');
+        $this->actingAs($this->viewer)->getJson('/%70roducts/create')->assertForbidden()->assertExactJson(['message' => 'この操作を行う権限がありません']);
+    });
+
+    test('前後の空白の除去・空文字の null 化（TrimStrings・ConvertEmptyStringsToNull）は /api/v1 では行わない', function (string $uri, bool $api) {
+        $request = Request::createFromBase(SymfonyRequest::create($uri, 'POST', [], [], [], ['CONTENT_TYPE' => 'application/json'], '{"note":"  a  ","x":""}'));
+
+        app(ConvertEmptyStringsToNull::class)->handle($request, fn ($r) => $r);
+        app(TrimStrings::class)->handle($request, fn ($r) => $r);
+
+        expect($request->json('note'))->toBe($api ? '  a  ' : 'a')
+            ->and($request->json('x'))->toBe($api ? '' : null);
+    })->with([
+        'API' => ['/api/v1/sales-orders', true],
+        'API（エンコードした接頭辞）' => ['/%61pi/v1/sales-orders', true],
+        '画面' => ['/sales-orders', false],
+        '似たパス' => ['/api/v1x', false],
     ]);
 });
 

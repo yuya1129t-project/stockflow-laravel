@@ -21,10 +21,15 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 $wantsJson = fn (Request $request): bool => $request->is('api/*') || $request->expectsJson();
 
 /**
- * 外部向け REST API（/api/v1。エラーは RFC 9457 の application/problem+json）。デコード前のパスで判定する
- * （$request->is はデコードしたパスを /u の正規表現で照合するので、UTF-8 として正しくないパスでは一致しない）
+ * 外部向け REST API（/api/v1。エラーは RFC 9457 の application/problem+json）か。ルートの照合と同じく、デコードしたパスで判定する
+ * （/%61pi/v1/products もルートに一致するため）。比較はバイト列の比較にする（$request->is は /u の正規表現で照合するので、
+ * UTF-8 として正しくないパスでは一致しない）
  */
-$isRestApi = fn (Request $request): bool => $request->path() === 'api/v1' || str_starts_with($request->path(), 'api/v1/');
+$isRestApi = function (Request $request): bool {
+    $path = $request->decodedPath();
+
+    return $path === 'api/v1' || str_starts_with($path, 'api/v1/');
+};
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -39,8 +44,13 @@ return Application::configure(basePath: dirname(__DIR__))
             Route::get('api-docs', ApiDocsController::class)->name('api-docs');
         },
     )
-    ->withMiddleware(function (Middleware $middleware): void {
+    ->withMiddleware(function (Middleware $middleware) use ($isRestApi): void {
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
+
+        // REST API は本文とクエリを生のまま自前で読む（App\Api\V1\ApiJsonBody・ApiQuery）ので、全体のミドルウェアで
+        // 前後の空白の除去・空文字の null 化をしない（認証より前に JSON の全要素を走査するので、要素の多い本文で時間がかかる）
+        $middleware->trimStrings(except: [$isRestApi]);
+        $middleware->convertEmptyStringsToNull(except: [$isRestApi]);
 
         $middleware->web(append: [
             HandleAppearance::class,
