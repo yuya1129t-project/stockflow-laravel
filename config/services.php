@@ -28,6 +28,11 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    // 発注点割れの通知（docs/spec.md §6-3。Slack Incoming Webhook 形式・https のみ）。未設定なら送らない（デモは未設定）
+    'reorder_notification' => [
+        'webhook_url' => env('STOCKFLOW_SLACK_WEBHOOK_URL'),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

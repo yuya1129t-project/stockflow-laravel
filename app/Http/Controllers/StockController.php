@@ -6,6 +6,8 @@ use App\Http\Requests\StockAdjustRequest;
 use App\Models\Product;
 use App\Models\User;
 use App\Products\ProductQuery;
+use App\ReorderNotifications\ReorderPointNotifier;
+use App\ReorderNotifications\ReorderPointTrigger;
 use App\Stock\StockAdjustment;
 use App\Stock\StockListParams;
 use App\Stock\StockQuery;
@@ -75,13 +77,14 @@ class StockController extends Controller
     }
 
     /** 棚卸調整（実数との差分を adjust で記録） */
-    public function adjust(StockAdjustRequest $request, Product $product, StockAdjustment $adjustment): RedirectResponse
+    public function adjust(StockAdjustRequest $request, Product $product, StockAdjustment $adjustment, ReorderPointNotifier $notifier): RedirectResponse
     {
         $user = $request->user();
         assert($user instanceof User);
 
         $result = $adjustment->adjust($user, $product, $request->actualQuantity(), $request->reason());
-        // 発注点割れの通知（#11）は、ここ（トランザクションの確定後）で $result['fellBelowReorderPoint'] を使って送る
+        // 発注点割れの通知（spec §6-3）: adjust（StockTransaction::run）が戻った後＝トランザクションの確定後に Job を投入する
+        $notifier->notify($result['fellBelowReorderPoint'], ReorderPointTrigger::stockAdjust($product->id), $user->id);
         Inertia::flash('toast', $result['recorded']
             ? [
                 'type' => 'success',
