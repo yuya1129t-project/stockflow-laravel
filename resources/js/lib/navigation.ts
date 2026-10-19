@@ -10,6 +10,7 @@ import {
 } from '@lucide/vue';
 import { dashboard } from '@/routes';
 import { index as partnersIndex } from '@/routes/partners';
+import { index as productsIndex } from '@/routes/products';
 import type { NavItem } from '@/types';
 
 /**
@@ -27,10 +28,10 @@ export const mainNavItems: NavItem[] = [
     },
     {
         title: '商品',
-        href: '/products',
+        href: productsIndex(),
         icon: Package,
         permission: 'view',
-        ready: false,
+        ready: true,
     },
     {
         title: '取引先',
