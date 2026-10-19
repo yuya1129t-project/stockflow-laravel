@@ -10,6 +10,7 @@ use App\Models\StockMovement;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Database\Seeders\Demo\DemoData;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
@@ -198,5 +199,21 @@ test('ローカル以外の DB には、許可の環境変数がなければシ�
 
     expect(fn () => $this->seed())->toThrow(RuntimeException::class, 'ローカル以外');
     expect(Product::count())->toBe(50)
+        ->and(User::count())->toBe(3);
+});
+
+test('シードが途中で失敗したら、消す前のデータに戻る（消去と投入は 1 つのトランザクション）', function () {
+    DB::table('products')->where('code', 'P-0001')->update(['name' => '目印の商品']);
+    DB::listen(function (QueryExecuted $query) {
+        if (str_starts_with($query->sql, 'insert into `stock_movements`')) {
+            throw new RuntimeException('シードの途中で失敗（テスト）');
+        }
+    });
+
+    expect(fn () => $this->seed())->toThrow(RuntimeException::class, 'シードの途中で失敗');
+    expect(Product::where('name', '目印の商品')->count())->toBe(1)
+        ->and(Product::count())->toBe(50)
+        ->and(SalesOrder::count())->toBe(80)
+        ->and(StockMovement::count())->toBe(303)
         ->and(User::count())->toBe(3);
 });

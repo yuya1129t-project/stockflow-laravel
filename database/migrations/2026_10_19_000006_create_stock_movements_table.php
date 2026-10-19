@@ -15,14 +15,14 @@ return new class extends Migration
     {
         Schema::create('stock_movements', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('product_id')->constrained()->restrictOnDelete();
-            $table->string('type', 10)->collation('utf8mb4_bin');
+            $table->foreignId('product_id')->constrained()->cascadeOnUpdate()->restrictOnDelete();
+            $table->string('type', 10)->collation('utf8mb4_0900_bin');
             $table->integer('quantity'); // in は正、out は負、adjust は 0 以外
             $table->string('reason')->nullable();
-            $table->string('ref_type', 20)->collation('utf8mb4_bin')->nullable();
+            $table->string('ref_type', 20)->collation('utf8mb4_0900_bin')->nullable();
             $table->unsignedBigInteger('ref_id')->nullable();
             // 履歴を残すため、ユーザーは物理削除せず無効化する（参照があれば削除できない）
-            $table->foreignId('user_id')->nullable()->constrained()->restrictOnDelete();
+            $table->foreignId('user_id')->nullable()->constrained()->cascadeOnUpdate()->restrictOnDelete();
             $table->timestamp('created_at')->useCurrent();
 
             $table->index(['product_id', 'created_at']);

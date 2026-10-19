@@ -7,7 +7,7 @@ namespace App\Support\Database;
  *
  * 参照する側を先に並べている（この順に DELETE すれば外部キーに引っかからない）。
  * フレームワークの管理用テーブル（FRAMEWORK_TABLES）は消さない。
- * マイグレーションとずれていないことはテスト（tests/Feature/Database/AppTablesTest.php）で確認する
+ * マイグレーションとずれていないことはテスト（tests/Feature/Database/SchemaConstraintsTest.php の最後のケース）で確認する
  */
 final class AppTables
 {

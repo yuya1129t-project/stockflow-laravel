@@ -3,11 +3,13 @@
 use App\Models\Partner;
 use App\Models\Product;
 use App\Models\PurchaseOrder;
+use App\Models\PurchaseOrderLine;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderLine;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Support\Database\AppTables;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -51,6 +53,13 @@ test('CHECK 制約が不正な値を拒否する', function (string $table, arra
 })->with([
     'ロールが定義外' => ['users', ['role' => 'owner'], 'users_role_check'],
     'ロールの大文字小文字違い' => ['users', ['role' => 'ADMIN'], 'users_role_check'],
+    'ロールの末尾に空白' => ['users', ['role' => 'admin '], 'users_role_check'],
+    '取引先の種類の末尾に空白' => ['partners', ['kind' => 'customer '], 'partners_kind_check'],
+    '受注ステータスの末尾に空白' => ['sales_orders', ['status' => 'draft '], 'sales_orders_status_check'],
+    '発注ステータスの末尾に空白' => ['purchase_orders', ['status' => 'draft  '], 'purchase_orders_status_check'],
+    '入出庫の種類の末尾に空白' => ['stock_movements', ['type' => 'in ', 'quantity' => 5], "Check constraint 'stock_movements_"],
+    '参照元の種類の末尾に空白' => ['stock_movements', ['ref_type' => 'sales_order ', 'ref_id' => 1], 'stock_movements_ref_type_check'],
+    '採番の種類の末尾に空白' => ['document_sequences', ['kind' => 'S '], 'document_sequences_kind_check'],
     '取引先の種類が定義外' => ['partners', ['kind' => 'vendor'], 'partners_kind_check'],
     '郵便番号にハイフン' => ['partners', ['postal_code' => '000-001'], 'partners_postal_code_check'],
     '郵便番号が 6 桁' => ['partners', ['postal_code' => '000001'], 'partners_postal_code_check'],
@@ -125,6 +134,46 @@ test('参照されているマスタ・ユーザーは消せない（restrict）
         ->and(fn () => Partner::whereKey($line->salesOrder->customer_id)->delete())->toThrow(QueryException::class, 'foreign key constraint')
         ->and(fn () => $user->delete())->toThrow(QueryException::class, 'foreign key constraint')
         ->and(fn () => $auditUser->delete())->toThrow(QueryException::class, 'foreign key constraint');
+});
+
+test('親の ID を変えると参照が追従する（ON UPDATE CASCADE。Next.js 版と同じ）', function () {
+    $salesLine = SalesOrderLine::factory()->create();
+    $purchaseLine = PurchaseOrderLine::factory()->for(Product::find($salesLine->product_id))->create();
+    $user = User::factory()->create();
+    $movement = StockMovement::factory()->for(Product::find($salesLine->product_id))->for($user)->create();
+    DB::table('audit_logs')->insert(['user_id' => $user->id, 'action' => 'login', 'summary' => 'ログイン']);
+    $customerId = $salesLine->salesOrder->customer_id;
+    $supplierId = $purchaseLine->purchaseOrder->supplier_id;
+
+    DB::table('products')->where('id', $salesLine->product_id)->update(['id' => 900001]);
+    DB::table('sales_orders')->where('id', $salesLine->sales_order_id)->update(['id' => 900002]);
+    DB::table('purchase_orders')->where('id', $purchaseLine->purchase_order_id)->update(['id' => 900003]);
+    DB::table('partners')->where('id', $customerId)->update(['id' => 900004]);
+    DB::table('partners')->where('id', $supplierId)->update(['id' => 900005]);
+    DB::table('users')->where('id', $user->id)->update(['id' => 900006]);
+
+    $sales = DB::table('sales_order_lines')->find($salesLine->id);
+    $purchase = DB::table('purchase_order_lines')->find($purchaseLine->id);
+    $stock = DB::table('stock_movements')->find($movement->id);
+    expect([$sales->product_id, $sales->sales_order_id])->toBe([900001, 900002])
+        ->and([$purchase->product_id, $purchase->purchase_order_id])->toBe([900001, 900003])
+        ->and(DB::table('sales_orders')->where('id', 900002)->value('customer_id'))->toBe(900004)
+        ->and(DB::table('purchase_orders')->where('id', 900003)->value('supplier_id'))->toBe(900005)
+        ->and([$stock->product_id, $stock->user_id])->toBe([900001, 900006])
+        ->and(DB::table('audit_logs')->where('user_id', 900006)->count())->toBe(1);
+});
+
+test('DB の既定値（CURRENT_TIMESTAMP）で入る日時がアプリのタイムゾーン（日本時間）とずれない', function () {
+    expect(DB::selectOne('SELECT @@session.time_zone AS tz')->tz)->toBe('+09:00');
+
+    DB::table('audit_logs')->insert(['action' => 'test', 'summary' => '既定の日時']);
+    DB::table('stock_movements')->insert($this->valid['stock_movements']);
+
+    $now = CarbonImmutable::now();
+    foreach (['audit_logs', 'stock_movements'] as $table) {
+        $stored = CarbonImmutable::parse((string) DB::table($table)->value('created_at'));
+        expect(abs($stored->diffInSeconds($now)))->toBeLessThan(60, "{$table}: {$stored} / {$now}");
+    }
 });
 
 test('シードで消すテーブルの一覧（AppTables）がマイグレーションとずれていない', function () {

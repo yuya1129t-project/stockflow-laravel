@@ -209,9 +209,14 @@ erDiagram
 
 ### データを消す操作のガード
 
-- シード（全データを消して入れ直す）と `migrate:fresh` などの DB を消すコマンドは、DB のホストがローカル（`localhost`・`127.0.0.1`・`::1`・Sail の `mysql`）以外なら、環境変数 `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` がない限り実行しません（デモ環境の定期リセットでだけ設定する想定）
-- テスト用 DB（`testing`）の取り違えも防ぎます: テストは `testing` でだけ動き、それ以外の環境から `testing` は消しません
+- シード（全データを消して入れ直す）と、`migrate:fresh`・`db:wipe` など DB を消すコマンドは、次のどれかに当たると実行しません。`--database` で別の接続を選んだときも、実行の直前にその接続を確かめます
+    - ローカルの開発環境（`APP_ENV=local`）とテスト以外の環境（production・staging など）で、環境変数 `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` がない（DB が同じマシン上にあっても必要です。デモ環境の定期リセットでだけ設定する想定）
+    - DB のホストがローカル（`localhost`・`127.0.0.1`・`::1`・Sail の `mysql`・ソケット）以外で、同じ環境変数がない
+    - テスト用 DB（`testing`）の取り違え: テスト以外の環境から `testing` を消そうとしている（環境変数でも外せません）
+- 本番（`APP_ENV=production`）では、`migrate:fresh` などのコマンドは環境変数があっても常に禁止です（Laravel の `DB::prohibitDestructiveCommands`）。シードだけが環境変数で許可できます
+- テストは、環境が `testing` で、実際に使う DB が `testing` のときだけ動きます。設定がキャッシュされている（`config:cache` 済み）と phpunit.xml の環境変数が効かないので、テストは DB を作り直す前に中止します（`sail artisan config:clear` してから実行してください）
 - シードで消すのはこのアプリのテーブルだけです（マイグレーション履歴・キャッシュ・キューのテーブルは残します）
+- 日時は Asia/Tokyo の壁時計で保存します。DB の既定値（`CURRENT_TIMESTAMP`）とそろえるため、MySQL の接続のタイムゾーンを `+09:00`（`DB_TIMEZONE`）にしています
 
 ## テスト・静的解析
 
@@ -224,6 +229,7 @@ erDiagram
 ./vendor/bin/sail npm run build        # 本番用ビルド
 ```
 
+- テストの並列実行（`--parallel`）には対応していません（テスト用 DB の名前を `testing` に固定して判定しているため）
 - テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時（ボリュームを作るとき）に自動で作られます。作られていない場合は `./vendor/bin/sail down -v` でボリュームを消してから起動し直します（開発用のデータも消えます）
 - CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します
 

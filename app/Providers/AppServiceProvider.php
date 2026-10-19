@@ -4,8 +4,10 @@ namespace App\Providers;
 
 use App\Support\Database\DestructiveOperationGuard;
 use Carbon\CarbonImmutable;
+use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
 
@@ -39,6 +41,8 @@ class AppServiceProvider extends ServiceProvider
         DB::prohibitDestructiveCommands(
             app()->isProduction() || ! DestructiveOperationGuard::checkDefaultConnection()->ok,
         );
+        // --database で既定以外の接続を選んだときのため、実行の直前にも実際に使う接続を確かめる
+        Event::listen(CommandStarting::class, DestructiveOperationGuard::ensureCommandIsSafe(...));
 
         Password::defaults(fn (): ?Password => app()->isProduction()
             ? Password::min(12)

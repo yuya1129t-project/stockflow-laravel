@@ -16,10 +16,10 @@ return new class extends Migration
         Schema::create('sales_orders', function (Blueprint $table) {
             $table->id();
             $table->string('number', 20)->unique(); // SO-YYYYMMDD-NNN
-            $table->foreignId('customer_id')->constrained('partners')->restrictOnDelete();
+            $table->foreignId('customer_id')->constrained('partners')->cascadeOnUpdate()->restrictOnDelete();
             $table->date('order_date');
             $table->date('due_date')->nullable();
-            $table->string('status', 20)->collation('utf8mb4_bin')->default('draft');
+            $table->string('status', 20)->collation('utf8mb4_0900_bin')->default('draft');
             $table->text('note')->nullable();
             $table->integer('subtotal')->default(0);
             $table->integer('tax')->default(0);
@@ -35,8 +35,8 @@ return new class extends Migration
 
         Schema::create('sales_order_lines', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('sales_order_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('product_id')->constrained()->restrictOnDelete();
+            $table->foreignId('sales_order_id')->constrained()->cascadeOnUpdate()->cascadeOnDelete();
+            $table->foreignId('product_id')->constrained()->cascadeOnUpdate()->restrictOnDelete();
             $table->integer('quantity');
             $table->integer('unit_price'); // 受注時点の単価（商品マスタの変更の影響を受けない）
 

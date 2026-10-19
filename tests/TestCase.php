@@ -4,6 +4,7 @@ namespace Tests;
 
 use App\Support\Database\DestructiveOperationGuard;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Illuminate\Support\Facades\DB;
 use Laravel\Fortify\Features;
 use RuntimeException;
 
@@ -11,14 +12,21 @@ abstract class TestCase extends BaseTestCase
 {
     /**
      * DB を作り直すトレイト（RefreshDatabase など）が動く前に、接続先がテスト用 DB（testing）であることを確かめる。
-     * 開発用 DB を指したままテストを走らせてデータを消す事故を防ぐ
+     * 開発用 DB を指したままテストを走らせてデータを消す事故を防ぐ。設定がキャッシュされていたら中止する
      * （トレイトのフック beforeRefreshingDatabase はテストのクラス側のトレイトに上書きされるため、ここで判定する）
      *
      * @return array<class-string, class-string>
      */
     protected function setUpTraits()
     {
-        $guard = DestructiveOperationGuard::checkDefaultConnection();
+        $name = DB::getDefaultConnection();
+        $connection = config("database.connections.{$name}");
+        $guard = DestructiveOperationGuard::checkTestRun(
+            is_array($connection) ? $connection : [],
+            (string) $this->app->environment(),
+            $this->app->configurationIsCached(),
+            (string) DB::connection()->getDatabaseName(),
+        );
         if (! $guard->ok) {
             throw new RuntimeException("テスト用 DB ではないため中止しました: {$guard->reason}");
         }

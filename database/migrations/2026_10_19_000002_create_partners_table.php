@@ -14,7 +14,7 @@ return new class extends Migration
             $table->id();
             $table->string('code', 20)->unique(); // 例 C-0001／S-0001
             $table->string('name');
-            $table->string('kind', 20)->collation('utf8mb4_bin');
+            $table->string('kind', 20)->collation('utf8mb4_0900_bin');
             $table->char('postal_code', 7)->nullable();
             $table->string('address')->nullable();
             $table->string('phone', 20)->nullable();

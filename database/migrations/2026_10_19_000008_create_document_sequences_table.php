@@ -11,7 +11,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('document_sequences', function (Blueprint $table) {
-            $table->string('kind', 2)->collation('utf8mb4_bin');
+            $table->string('kind', 2)->collation('utf8mb4_0900_bin');
             $table->date('date');
             $table->integer('last_number')->default(0);
 

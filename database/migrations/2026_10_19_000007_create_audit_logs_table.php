@@ -11,7 +11,7 @@ return new class extends Migration
     {
         Schema::create('audit_logs', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('user_id')->nullable()->constrained()->restrictOnDelete();
+            $table->foreignId('user_id')->nullable()->constrained()->cascadeOnUpdate()->restrictOnDelete();
             $table->string('action', 50);
             $table->string('target_type', 50)->nullable();
             $table->string('target_id', 50)->nullable();
