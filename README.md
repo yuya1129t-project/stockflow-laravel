@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml)
 
-> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
+> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
 
 ## このリポジトリについて
 
@@ -26,7 +26,7 @@
 | ダッシュボード         | 今月の受注額・未出荷数・発注点割れ・入荷待ち                           | 予定 |
 | ユーザー管理・操作履歴 | ユーザー・ロール管理、API トークン、操作履歴の閲覧                     | 予定 |
 | 外部向け REST API      | `/api/v1`（Bearer 認証）、`docs/openapi.json` に対する契約テスト       | 予定 |
-| 通知                   | 発注点割れの通知（Queue／Job）                                         | 予定 |
+| 通知                   | 発注点割れの通知（Queue／Job）                                         | 済み |
 
 ## 技術スタック
 
@@ -466,7 +466,7 @@ StockTransaction::run(function (StockTransaction $stock) use ($id, $expected) {
 - **デッドロックしない**: 全明細を 1 回の `record` に渡すので、商品は明細の順ではなく id の順にロックされます。明細の順番が逆の 2 受注を同時に出荷しても、待ちは一周しません（`StockTransaction` は、同じトランザクションであとから別の商品のロックを足すと例外にするので、明細ごとに `record` を呼ぶ形にはできません）。出荷では `OrderLocks::lockProductsForLines`（FOR SHARE）を使いません
 - **在庫不足で全体を中止**: 1 行でも足りなければ `InsufficientStockException` でトランザクションごと取り消します。受注の状態・`updated_at`・入出庫・操作履歴のどれも残りません。画面は確認ダイアログのまま「在庫が足りない商品が N 品目あるため、出荷しませんでした（在庫・ステータスは変わっていません）」と、不足する商品（コード・名前）の**必要数・現在庫・不足数（単位つき）**の表を出します（商品コードの順。1 回だけの flash `shortages`）。明細も version も変わらないので、在庫を補充すれば同じ画面のまま出荷できます
 - 出荷では顧客・商品の有効を問いません（spec §3 の制限は「新規の」受注で選べないこと。発注の入荷・Next.js 版と同じ）
-- 戻り値: `SalesOrderService::changeStatus` は `['number' => string, 'from' => SalesOrderStatus, 'to' => SalesOrderStatus, 'stock' => StockRecordResult|null]` を返します（出荷以外は `stock` が null）。`stock->fellBelowReorderPoint`（`list<StockChange>`。「発注点以上 → 未満」に変わった有効な商品と前後の在庫）は、`run` の確定後にコントローラーまで返しています。#11 の通知はここで送ります（今は送っていません）
+- 戻り値: `SalesOrderService::changeStatus` は `['number' => string, 'from' => SalesOrderStatus, 'to' => SalesOrderStatus, 'stock' => StockRecordResult|null]` を返します（出荷以外は `stock` が null）。`stock->fellBelowReorderPoint`（`list<StockChange>`。「発注点以上 → 未満」に変わった有効な商品と前後の在庫）は、`run` の確定後にコントローラーまで返し、コントローラーが発注点割れの通知の Job を投入します（下の「発注点割れの通知」）
 
 ロックの順番は発注と同じです（作成: 顧客 FOR SHARE → 明細の商品 FOR SHARE → 採番の行／編集: 顧客 FOR SHARE → 受注 FOR UPDATE → 明細の商品 FOR SHARE／確定・取消: 受注 FOR UPDATE／出荷: 受注（条件付き UPDATE）→ 明細の商品 FOR UPDATE（id 順））。
 
@@ -476,6 +476,51 @@ StockTransaction::run(function (StockTransaction $stock) use ($id, $expected) {
 - `tests/Feature/SalesOrders/SalesOrderShipTest.php`: 出荷で在庫が減る・参照元、在庫不足で全体を中止（1 行だけ不足でも他の行を記録しない・状態・updated_at・操作履歴が変わらない・不足の表・補充すれば出荷できる）、発注点割れに変わった商品を返す、最終状態・取消の後は出荷できない、競合・実在しない version、操作履歴の失敗で出庫も取り消す、無効な顧客・商品でも出荷できる、viewer は 403
 - `tests/Feature/SalesOrders/SalesOrderConcurrencyTest.php`（別プロセスのワーカー `tests/Support/sales-order-worker.php`。後の側のロック待ちを `performance_schema.data_lock_waits` で確かめてから先を確定）: 同時作成で番号が重複しない、同じ受注の同時の 2 回の出荷で出庫は 1 回、別々の受注が同じ商品を同時に出荷して在庫が負にならない、明細の順番が逆の 2 受注の同時出荷でデッドロックしない、取引先の種別変更と作成（どちらが先でも）、商品の無効化と作成、作成と在庫の記録、出荷と取消、明細 0 行にする編集と確定、確定と編集、同時の 2 本の編集
 - 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 出荷を「読んでから更新」にする、出荷の条件から updated_at を外す、明細ごとに `record` を呼ぶ、出荷で商品を明細の順にロックする、在庫の記録の商品のロックを外す、確定・取消の受注のロックを外す、編集の受注のロックを外す、顧客の FOR SHARE を外す、編集・ステータス変更の updated_at の比較を外す
+
+## 発注点割れの通知
+
+入出庫の結果、有効な商品の現在庫が**発注点以上 → 発注点未満**に変わったとき、Slack の Incoming Webhook 形式（`{text, blocks}`）で通知します（docs/spec.md §6-3）。Next.js 版と同じ文面・同じ規則です。
+
+- **対象の操作**: 棚卸調整と受注の出荷。発注の入荷（在庫が増えるだけ）は対象外です。無効の商品・もとから割れている商品・割れない商品は通知しません（判定は `StockPlan` の `fellBelowReorderPoint`）
+- **1 回の操作につき 1 通**: 出荷で複数の商品が割れたら 1 通にまとめます。商品ごとの行は 20 件まで（超えた分は「ほか N 件」と在庫一覧の発注点割れ `/stock?level=low` へのリンク）。blocks は最大 22 個（Slack の上限は 50 個）
+- **文面**: 見出し「発注点を下回った商品が N 件あります（棚卸調整／受注 SO-… の出荷）」と、商品ごとに 商品コード・商品名（在庫画面 `/stock/{id}` へのリンク。基準は `APP_URL`）・現在庫・発注点・変更前の在庫
+- **利用者の入力の扱い**: 商品コード・商品名・単位は `&` `<` `>` をエスケープし、`verbatim: true` の mrkdwn（blocks）にだけ入れます（`@here`・`@channel` などのメンション化、URL のリンク化を止める）。トップレベルの `text`（通知のプレビュー。verbatim を指定できない）は件数ときっかけだけです
+- **トランザクションの確定後に投入**: 棚卸調整（`StockController::adjust`）と出荷（`SalesOrderController::changeStatus`）で、`StockTransaction::run` が戻った後に `App\ReorderNotifications\ReorderPointNotifier` が Job（`App\Jobs\SendReorderPointNotification`）を投入します。Job は `ShouldQueueAfterCommit` なので、万一トランザクションの中で投入しても、確定するまでキューに入らず、取り消されたら捨てられます。在庫不足・操作履歴の失敗などで取り消された操作では投入しません
+- **送信**: https の URL だけに、タイムアウト 3 秒（接続から受信の終わりまで）で POST します。リダイレクトはたどりません（3xx は HTTP エラー）。応答本文は使いません
+- **失敗しても業務処理は取り消しません**: 送れなかったら操作履歴（`audit_logs`、`action = notify_failed`。対象は棚卸調整なら商品、出荷なら受注）に、きっかけ・商品コード・**原因の種類だけ**（URL の設定が不正／タイムアウト／HTTP エラー（ステータス）／通信エラー／キューに投入できなかった）を記録します。Webhook URL・応答本文・例外のメッセージは操作履歴にもログにも残しません。キュー（jobs テーブル）にも URL は入れません（実行のときに設定から読む）
+- **再試行（同じ通知を何度も送らないため）**: 試行は最大 3 回（`tries = 3`）。再試行するのは、届いていないことが確かなとき（接続の前の失敗＝cURL 6 名前を解決できない・7 接続できない、HTTP 429 流量制限）だけで、10 秒・60 秒あけます。タイムアウト・5xx などは、相手が受け取って投稿した可能性があるので再試行しません。`notify_failed` は最後に 1 回だけ記録します。想定外の例外（プログラムの誤り）は `maxExceptions = 1`、ワーカーの打ち切り（30 秒）は `failOnTimeout` で、どちらも再試行しません
+
+### 設定
+
+```bash
+# .env（コミットしない）。https の Incoming Webhook の URL。空なら送らない（Job も投入しない。デモは未設定）
+STOCKFLOW_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+- `http://` の URL・認証情報入りの URL・URL として不正な値は使わず、通知のたびに `notify_failed`（Webhook URL の設定が不正）を記録します
+- 在庫画面へのリンクは `APP_URL`（http／https）から作ります。不正ならリンクなしで送ります
+
+### キューのワーカー
+
+キューは database ドライバー（`QUEUE_CONNECTION=database`、`jobs` テーブル。スターターキットのマイグレーション）です。**ワーカーを動かさないと送られません**（Job は `jobs` テーブルにたまります）。
+
+```bash
+./vendor/bin/sail artisan queue:work          # ワーカーを起動（止めるまで動き続ける）
+./vendor/bin/sail artisan queue:work --once   # 1 件だけ処理して終わる（確認用）
+./vendor/bin/sail artisan queue:failed        # 失敗した Job の一覧（failed_jobs）
+```
+
+- コードを変えたらワーカーを再起動します（`./vendor/bin/sail artisan queue:restart`。動いているワーカーは古いコードのまま）
+- **AWS へのデプロイ（#14）では、Web とは別にワーカーを常駐させる必要があります**（ECS のサービスを 1 つ足す・Supervisor などで `php artisan queue:work` を起動し続ける）。ワーカーがないと通知は送られず、`jobs` テーブルにたまり続けます
+
+### テスト
+
+テストから外部へは送りません（`phpunit.xml` で `STOCKFLOW_SLACK_WEBHOOK_URL` を空に固定し、`Http::fake` で差し替えていない要求は `tests/TestCase.php` の `preventStrayRequests` で例外）。
+
+- `tests/Unit/ReorderNotifications/ReorderPointMessageTest.php`: 文面、エスケープと verbatim（`@here`・`<!channel>`・`<@U123>`・`<https://…|…>`・`&lt;` を商品名と単位に入れ、リンクあり・なしで生のまま残らない）、`text` に入力が入らない、20 件の上限と「ほか N 件」、リンクの基準・Webhook URL の検証、失敗の要約
+- `tests/Feature/ReorderNotifications/SendReorderPointNotificationTest.php`（`Http::fake`）: 成功（宛先・JSON・タイムアウト 3 秒・リダイレクトなしの設定）、HTTP エラー、リダイレクトをたどらない、タイムアウト、再試行する失敗としない失敗、最後まで失敗したら 1 回記録、URL の不正、秘密を残さない
+- `tests/Feature/ReorderNotifications/ReorderPointDispatchTest.php`: 跨いだときだけ 1 回投入（`Queue::fake`）、跨がない・無効・差分 0・未設定・入荷・出荷以外では投入しない、出荷は 1 通にまとめる、取り消された操作では投入しない、送る時点でトランザクションの外にいて別の接続から確定後の在庫が見える、送信・投入に失敗しても業務処理は残り `notify_failed` を記録、確定するまで `jobs` に入らない
+- 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 出荷の `run` の中で投入する、リダイレクトの禁止を外す、`ShouldQueueAfterCommit` を `ShouldQueue` にする
 
 ## テスト・静的解析
 

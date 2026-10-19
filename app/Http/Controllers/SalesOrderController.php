@@ -9,6 +9,8 @@ use App\Models\SalesOrder;
 use App\Models\User;
 use App\Orders\OrderAmounts;
 use App\Orders\OrderValidation;
+use App\ReorderNotifications\ReorderPointNotifier;
+use App\ReorderNotifications\ReorderPointTrigger;
 use App\SalesOrders\SalesOrderListParams;
 use App\SalesOrders\SalesOrderQuery;
 use App\SalesOrders\SalesOrderService;
@@ -118,16 +120,20 @@ class SalesOrderController extends Controller
      * ステータス変更（確定・出荷済・取消。出荷は全明細を在庫から出庫する）。
      * 在庫が足りなければ出荷せず、不足する商品と数量を 1 回だけの flash（shortages）で詳細画面に返す（spec §4）
      */
-    public function changeStatus(SalesOrderStatusRequest $request, SalesOrder $salesOrder): RedirectResponse
+    public function changeStatus(SalesOrderStatusRequest $request, SalesOrder $salesOrder, ReorderPointNotifier $notifier): RedirectResponse
     {
+        $actor = self::actor($request);
         try {
-            $result = $this->service->changeStatus(self::actor($request), $salesOrder->id, $request->target(), $request->version());
+            $result = $this->service->changeStatus($actor, $salesOrder->id, $request->target(), $request->version());
         } catch (InsufficientStockException $e) {
             Inertia::flash('shortages', self::shortageRows($e));
 
             return to_route('sales-orders.show', $salesOrder)->withErrors(['status' => SalesOrderService::shortageMessage($e)]);
         }
-        // 発注点割れの通知（#11）は、ここ（トランザクションの確定後）で $result['stock']->fellBelowReorderPoint を使って送る
+        // 発注点割れの通知（spec §6-3）: 出荷（StockTransaction::run）が戻った後＝トランザクションの確定後に、全明細の分を 1 通で投入する
+        if ($result['stock'] !== null) {
+            $notifier->notify($result['stock']->fellBelowReorderPoint, ReorderPointTrigger::salesOrderShipped($salesOrder->id, $result['number']), $actor->id);
+        }
         Inertia::flash('toast', [
             'type' => 'success',
             'message' => $result['to'] === SalesOrderStatus::Shipped
