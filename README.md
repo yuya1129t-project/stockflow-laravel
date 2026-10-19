@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml)
 
-> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知、ダッシュボードまで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
+> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注、発注点割れの通知、ダッシュボード、外部向け REST API まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
 
 ## このリポジトリについて
 
@@ -25,7 +25,7 @@
 | 在庫                   | 現在庫一覧（発注点割れの強調）、入出庫履歴、棚卸調整                   | 済み |
 | ダッシュボード         | 今月の受注額と前月比・未出荷数・発注点割れ・入荷待ち・直近 6 か月      | 済み |
 | ユーザー管理・操作履歴 | ユーザー・ロール管理、API トークン、操作履歴の閲覧                     | 済み |
-| 外部向け REST API      | `/api/v1`（Bearer 認証）、`docs/openapi.json` に対する契約テスト       | 予定 |
+| 外部向け REST API      | `/api/v1`（Bearer 認証）、`docs/openapi.json` に対する契約テスト       | 済み |
 | 通知                   | 発注点割れの通知（Queue／Job）                                         | 済み |
 
 ## 技術スタック
@@ -509,7 +509,7 @@ admin だけが使えます（docs/spec.md §2・§5-8・§5-9・§6-2）。権�
     - `Authorization: Bearer <token>` だけで認証します（スキーム名の大文字・小文字は区別しません）。Cookie のセッションでは通りません（`config/sanctum.php` の `guard`・`stateful` が空。SPA 用の `/sanctum/csrf-cookie` も登録しません）。Web の画面はトークンでは開けません
     - トークンの形式でない値は DB を引かずに失敗にします（範囲外の id でも例外にしません）
     - 失効・持ち主の無効を毎回確かめます。持ち主（ロール・有効）は毎回 DB から読むので、ロール変更・無効化は次のリクエストから効きます。権限は Web と同じ Gate（`->can(Permission::...)`）で、トークンの持ち主の**いまの**ロールに従います
-    - 失敗の理由（ヘッダーなし・形式違い・存在しない・失効済み・持ち主が無効）は区別せず、同じ 401 を返します（いまは `{"message": "ログインが必要です"}`。RFC 9457 の形にするのは #10）
+    - 失敗の理由（ヘッダーなし・形式違い・存在しない・失効済み・持ち主が無効）は区別せず、同じ 401 を返します（RFC 9457 の problem+json と `WWW-Authenticate: Bearer realm="StockFlow API"`。[外部向け REST API](#外部向け-rest-api)）
     - 最終使用日時は、認証に成功したリクエストごとに更新します（Sanctum の標準）
 
 ### 操作履歴（`/audit-logs`）
@@ -597,6 +597,107 @@ STOCKFLOW_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 - `tests/Unit/Dashboard/DashboardPeriodTest.php`: JST と UTC の境界（UTC 15:00 = JST 0:00、年またぎ）、PHP の既定のタイムゾーンによらない、月の範囲（月末・12 月・うるう年と平年の 2 月）、月をずらす、直近 6 か月、前月比（前月 0 は増減率なし）と表示用の文字列（小数 1 桁、丸めて 0 なら「±0%」、「前月の受注なし」）、「他 N 件」の件数
 - `tests/Feature/DashboardTest.php`: テストごとに専用のデータを作ります（テストのトランザクションで巻き戻すので、テストどうしは独立）。基準日時は JST 2000-03-01 00:30（UTC ではまだ 2/29）。受注額は税込の total で confirmed と shipped だけ（下書き・取消・範囲外の月を含めない）、前月比・年またぎ・JST の月末、DB のセッションの `time_zone` を変えても同じ値（受注額に加えて、納期・予定日が昨日と今日の伝票で超過の件数も確かめるので、`CURDATE()` で比べる退行をこのテストだけで検出できる）、未出荷・納期切れ（今日・納期なしは含めない）、入荷待ちの並び順と予定日超過、発注点割れ（無効な商品を含めない・件数は現在庫一覧と一致）、問い合わせの回数
 - 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 合計を subtotal にする、超過の比較を `<=` にする、JST への変換をやめる、`CURDATE()` で比べる、下書きを含める、予定日なしを先にする、発注点割れから有効の条件を外す、「±0%」の判定・丸めを外す、「他 N 件」を未出荷の全件から数える
+
+## 外部向け REST API
+
+外部のシステムから商品・在庫・受注を参照し、受注を登録するための API です（docs/spec.md §6-2）。**契約は [docs/openapi.json](docs/openapi.json)（OpenAPI 3.1）で、[Next.js 版](https://github.com/yuya1129t-project/stockflow-next) と同じファイルです**（このリポジトリでは変更しません）。実装は契約に合わせ、実際の応答をこのファイルで検証する契約テストで食い違いを検出します。
+
+| メソッド | パス                            | 内容                                                         | 権限                 |
+| -------- | ------------------------------- | ------------------------------------------------------------ | -------------------- |
+| GET      | `/api/v1/products`              | 商品一覧（現在庫・発注点割れを含む。`q`・`page`・`perPage`） | admin／staff／viewer |
+| GET      | `/api/v1/products/{code}/stock` | 商品の現在庫と発注点                                         | admin／staff／viewer |
+| GET      | `/api/v1/sales-orders`          | 受注一覧（`status`・`from`・`to`・`page`・`perPage`）        | admin／staff／viewer |
+| GET      | `/api/v1/sales-orders/{number}` | 受注詳細（明細を含む）                                       | admin／staff／viewer |
+| POST     | `/api/v1/sales-orders`          | 受注の登録（draft）                                          | admin／staff         |
+| GET      | `/api/v1/openapi.json`          | OpenAPI の定義（docs/openapi.json をそのまま返す）           | 認証不要             |
+
+- **閲覧画面**: http://localhost:8089/api-docs （Swagger UI。ログイン不要。中身は公開している openapi.json と同じ）
+- 構成: ルート `routes/api.php`（接頭辞 `api/v1`・`api` ミドルウェアは `bootstrap/app.php`）、コントローラー `app/Http/Controllers/Api/V1`、応答・クエリ・本文の読み取り・シリアライズ・受注の登録 `app/Api/V1`
+
+### 認証と権限
+
+- `Authorization: Bearer <token>` だけで認証します（`ApiTokenAuth::MIDDLEWARE`。[API トークン（Sanctum）](#api-トークンsanctum)）。**画面のログイン（Cookie）では使えません**（ブラウザが自動で送る Cookie で API を動かせないので、CSRF の余地がありません）
+- 失敗（ヘッダーなし・形式違い・存在しない・失効済み・持ち主が無効）は理由を区別せず、同じ 401（`WWW-Authenticate: Bearer realm="StockFlow API"`）です
+- 権限はトークンの持ち主の**いまの**ロールで、画面と同じ Gate で検査します（ルートの `->can(Permission::...)` とコントローラーの Policy）。参照は全ロール、受注の登録は admin／staff（viewer は 403）
+- 認証・認可の後で本文を読みます（認証されていない要求の本文は検査しません）
+- CORS は許可しません（`config/cors.php`。サーバー間の利用を想定。Laravel の既定は `api/*` に `Access-Control-Allow-Origin: *` を返します）
+
+#### トークンの発行
+
+1. admin でログインし、「ユーザー管理」で API を使わせるユーザー（ロールが権限になります）の詳細を開く
+2. 「API トークン」で名前を付けて発行する。**平文はその場で 1 回だけ表示されます**（DB にはハッシュだけを保存）。控えたら閉じる
+3. 不要になったら同じ画面で失効させる（ユーザーを無効化するとすべて失効します）
+
+### 例（curl）
+
+```bash
+export TOKEN='1|sf_...'            # 発行したトークン
+BASE=http://localhost:8089/api/v1
+
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/products?q=P-00&perPage=5"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/products/P-0001/stock"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/sales-orders?status=confirmed&perPage=10"
+
+# 受注の登録（draft）。納期は受注日（今日・Asia/Tokyo）以降の日付にする（省略もできる）。ここでは 7 日後
+DUE=$(TZ=Asia/Tokyo date -v+7d +%F 2>/dev/null || TZ=Asia/Tokyo date -d '+7 days' +%F)
+curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"customerCode\":\"C-0001\",\"dueDate\":\"$DUE\",\"note\":\"API から登録\",\"lines\":[{\"productCode\":\"P-0001\",\"quantity\":2}]}" \
+  "$BASE/sales-orders"
+# → 201、Location: /api/v1/sales-orders/SO-YYYYMMDD-NNN（受注番号は登録した日で採番）
+```
+
+### 形式とエラー（docs/openapi.json のとおり）
+
+- 一覧は `{ data, meta: { page, perPage, total } }`。perPage は既定 20・上限 100、page は 1〜1,000,000。全件数を超えるページは丸めずに空の `data`
+- 商品・取引先・受注はコード・番号で表し、**内部の ID は出しません**。金額・数量は整数、日付は `YYYY-MM-DD`、日時は ISO 8601（UTC。例 `2026-10-19T03:00:00.000Z`）。コード・番号は大文字・小文字を区別しません
+- 並び: 商品は商品コードの昇順（無効な商品も含め `isActive` で区別）、受注は受注日の新しい順（同じ日は受注番号の降順）
+- エラーは RFC 9457（`application/problem+json`）。`type` は `about:blank`、`title` は HTTP のステータスの説明、`detail` は日本語
+    - 400: 検証エラーは `errors: [{ pointer | parameter, detail }]`（本文の項目は JSON Pointer の `pointer`（例 `#/lines/0/quantity`）、クエリ・パスは `parameter`）。不正な JSON・空の本文・UTF-8 として正しくない本文、余分な項目、型違い、範囲外、NUL（U+0000）を含む文字列（クエリ・パス・本文の値とキー）、2000〜2099 年の外の日付、同じクエリのパラメーターの重複、`to` が `from` より前
+    - 401・403、404（存在しない商品・受注と、`/api/v1` の下の未定義のパス）、405（定義したパスの未定義のメソッド。`Allow` ヘッダー付き。例 `GET, HEAD`）、413（本文が 65,536 バイト超）、415（本文が JSON（UTF-8）でない。`Accept-Post: application/json`）
+    - 想定外のエラーは 500（内容は応答に出さず、ログに残します）。応答はすべて `Cache-Control: no-store`
+- 画面の一覧と違い、**クエリの不正な値は既定値に置き換えず 400** にします（呼び出し側の誤りに気づけるように）。知らないパラメーターは無視します
+
+### 受注の登録（POST）
+
+- 本文: `customerCode`（必須）・`lines`（1〜100 行。`productCode`・`quantity`）・`dueDate`（任意・null 可）・`note`（任意・null 可）。単価は指定できず、商品マスタの売価になります。受注日は登録した日（Asia/Tokyo）
+- 本文の型・必須・余分な項目は openapi.json の `SalesOrderCreate` のとおりに検査し（`App\Api\V1\SalesOrderCreateBody`。上限の値が openapi.json と同じことはテストで突き合わせます）、コードを ID に解決してから、**画面と同じ入力の検証（`SalesOrderRequest` の規則。明細の重複・合計の上限・備考の制御文字など）と、画面と同じ受注のサービス（`SalesOrderService::create`）**で作ります。顧客・商品の行ロックと種別・有効の再検査、採番、金額の計算、操作履歴は画面とまったく同じです。画面の項目のエラーは本文の JSON Pointer に読み替えます（例 `lines.1.product_id` → `#/lines/1/productCode`）
+- 操作履歴の summary の末尾に「REST API（トークン #ID）から作成」を残します（操作したユーザーはトークンの持ち主。Next.js 版と同じ文言）
+- コードの解決（存在の確認と売価の読み取り）はトランザクションの外です。種別・有効はサービスが行をロックしてから検査し直しますが、**売価だけは読み取りから作成までの間の変更が反映されません**（要求を受けた時点の売価。Next.js 版と同じ）
+- 画面の下書きは明細 0 行でも保存できますが、API では 1 行以上を必須にしています（契約のとおり）
+
+### 本文の大きさの上限と PHP の制約
+
+- アプリでは、`Content-Length` の申告が 65,536 バイトを超えれば本文を読まずに 413、申告がなくても上限 + 1 バイトまでしか読まずに 413 にします（`App\Api\V1\ApiJsonBody`）
+- PHP の `post_max_size` を超える `Content-Length` の申告は、Laravel の `ValidatePostSize`（全体のミドルウェア）が認証より前に 413 にします（本文は読みません。形は同じ problem+json）
+- ただし PHP では、**本文の受信は PHP の SAPI（`artisan serve`・php-fpm）がアプリの処理の前に終えています**（さらに Laravel の `Request::capture` が JSON の本文を先に読み込みます）。Next.js 版のように、受信の途中で打ち切って接続を切ることはアプリではできません
+- 認証より前のコストは、本文の形で大きく変わります。Laravel の全体のミドルウェア `TrimStrings`・`ConvertEmptyStringsToNull` は JSON の全要素を走査するので、**`/api/v1` ではこの 2 つを外しています**（`bootstrap/app.php`。API は本文とクエリを生のまま自前で読むため）。`artisan serve` で、要素の多い本文（`[1,1,…]` の 1,200 万要素・24MB）をトークンなしで POST したときの 401 までの時間は、外す前が 17.6 秒、外した後が 2.5 秒でした（残りは受信と `Request::capture` の JSON のデコード）。**`/login` など `/api/v1` 以外のパスには、外す前と同じコストが残ります**
+- そのため、**受信そのものの上限はサーバー全体に掛けます**。#14（AWS でのデモ公開）で、前段の Web サーバー（nginx なら `client_max_body_size` をサーバー全体に。画面で最大のアップロード（商品の CSV の取込）に合わせた値にし、`/api/v1` は 64k）、PHP の `post_max_size`（同じくらいの値。Sail の既定は 100M）を設定し、php-fpm の `memory_limit` を無制限にしないでください
+
+### 契約テスト
+
+- `tests/Support/OpenApiContract.php`: 実際の応答を docs/openapi.json で検証します。検証には JSON Schema 2020-12 の実装 [opis/json-schema](https://opis.io/json-schema/)（dev 依存のみ）を使い、openapi.json をそのまま 1 つの文書として読み込んで `#/components/schemas/...` を解決します（Next.js 版は ajv で同じことをしています）
+    - 定義にない操作・ステータスコード・Content-Type、定義にあるヘッダー（401 の `WWW-Authenticate`・201 の `Location`・415 の `Accept-Post`）の欠落、本文のスキーマ違反（項目の過不足・型・null の可否・`format`（date・date-time）・`pattern`・範囲）で落ちます
+    - **選んだ理由**: OpenAPI の検証ライブラリ（league/openapi-psr7-validator など）は OpenAPI 3.0 が前提で、3.1 の `type: ["string", "null"]` を正しく扱えないものがあります。応答の本文・ステータス・ヘッダーの対応だけなら薄い自作で足り、スキーマの検証は 2020-12 に準拠した実装に任せるのが確実です（opis は 2020-12 の `format` を検証し、依存も opis/string・opis/uri だけ）
+- `tests/Feature/Api/RestApiTest.php`（MySQL）: すべての応答（成功・エラー）を上の検証に通し、最後に**定義した応答（パス × メソッド × ステータス、25 通り）をすべて一度は実際に返して検証した**ことを確かめます。GET の 403 は、いまのロールはすべて参照できるので、権限表を差し替えて起こします
+    - 認証: 各エンドポイントのヘッダーなし、形式違い・存在しない・失効済み・持ち主が無効などがすべて同じ 401、スキーム名の大文字・小文字、実際のログインの Cookie だけでは 401（Cookie と viewer のトークンなら 403）、認証の前に本文を読まない、ロールの変更が次の要求から効く
+    - 一覧: 件数・並び・全ロール・検索（ワイルドカードにしない）・ページの境界・不正なクエリ。受注一覧の絞り込みは、受注日の一覧の 1/3 と 2/3 の位置の日を境界にして、`from`・`to` のどちらを無視しても件数が合わなくなる条件（0 件・全件でないことを先に確かめる）で確かめます。並びは、同じ日の受注を番号の大きい順に作って、作成の順ではなく番号の順であることを確かめます
+    - POST: 画面から 1 件作った次の番号で採番・単価は売価・金額・明細・操作履歴（経路とトークンの ID）・詳細の API と同じ内容、400（35 通り。各ケースで、openapi.json のスキーマにも違反するもの（型・必須など）と、業務の検証（画面と同じ検証・サービス）だけで拒否するものを区別して確かめる）、415、413（上限ちょうどは読んで検証に進み、1 バイト超えると 413。Content-Length の申告だけでも 413）、405（Allow）、未定義のパスの 404、`/api/v1/openapi.json` が docs/openapi.json と同じバイト列
+    - 引用符のない巨大な整数（`9223372036854775808`）を文字列の項目に送ると 400（JSON の型のまま検査する）、エンコードした接頭辞（`/%61pi/v1/...`・`/api/%761/...`）でも 401・403・404・405 が problem+json（判定はルートの照合と同じデコードしたパス）、`/api/v1` の外の画面・JSON の応答は変わらない、`TrimStrings`・`ConvertEmptyStringsToNull` は `/api/v1` だけで外れている
+- `tests/Unit/Api/OpenApiContractTest.php`: 検証器が食い違い（内部の ID の追加・必須の欠落・型・日時の形式・範囲外の日付・定義にないステータス・Content-Type・ヘッダーの欠落など 17 通り）を実際に検出すること
+- `tests/Unit/Api/SalesOrderCreateBodyTest.php`: 本文・クエリの上限（文字数・行数・数量・ページ・本文の大きさ）と日付の範囲が openapi.json の値と同じこと
+- `tests/Feature/Api/ApiDocsTest.php`: `/api-docs` がログインなしで開け、Cookie を発行しない、SRI 付きの版固定の CDN、CSP（スクリプトは CDN のパスと初期化スクリプトのハッシュだけ・`unsafe-eval` なし・`connect-src 'self'`）、ほかの画面に CSP を付けない
+- 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: `to` を無視する、`from` のときに空を返す、一覧に内部の id を出す、日時の形式を変える、受注の並びを作成の順にする、範囲外のページを丸める、クエリの NUL を見ない、Content-Length を見ない、読みながらの上限を外す、`WWW-Authenticate`・`Accept-Post` を付けない、操作履歴に経路を残さない、余分な項目を見ない、problem の Content-Type を `application/json` にする、GET の権限をルートで見ない、405 を Laravel の既定の描画にする、Sanctum の `guard` を `web` にする、`JSON_BIGINT_AS_STRING` でデコードする、API の範囲をデコード前のパスで判定する、`TrimStrings`・`ConvertEmptyStringsToNull` を `/api/v1` でも通す
+
+### /api-docs（Swagger UI）
+
+- Swagger UI は依存に入れず、jsDelivr の `swagger-ui-dist@5.33.1`（版を固定）を **SRI（sha384）付き**で読み込みます（Next.js 版と同じ版・同じ値）。版を上げるときは integrity を計算し直します（`curl -s https://cdn.jsdelivr.net/npm/swagger-ui-dist@<版>/swagger-ui-bundle.js | openssl dgst -sha384 -binary | openssl base64 -A`。css も同じ）
+- **この応答だけに CSP** を付けます: `default-src 'none'`、`script-src` はその版の CDN のパスと初期化スクリプトのハッシュだけ、`style-src` は CDN と `'unsafe-inline'`（Swagger UI が style 属性を使うため）、`connect-src 'self'`、`frame-ancestors 'none'` ほか。アプリのほかの画面は変えていません
+- Web のミドルウェア（セッション・Inertia）を通さないので、Cookie を発行しません。「Try it out」で入力したトークンはブラウザのメモリにだけ置きます（`persistAuthorization: false`）
+
+### 残る制約（対策しないもの）
+
+- `OPTIONS` は Laravel の既定の応答（200・`Allow: GET,HEAD`・本文なし）です（契約に定義がないため。Next.js 版は 204）
+- `HEAD` は GET と同じ処理をして本文を返しません（Laravel の既定）
 
 ## テスト・静的解析
 

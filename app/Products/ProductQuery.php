@@ -21,18 +21,19 @@ final class ProductQuery
 
     /**
      * 一覧（検索・並べ替え・ページ送り）。範囲外のページは最終ページに丸める。
-     * lowStockOnly は発注点割れ（有効な商品で 現在庫 < 発注点）だけに絞る（現在庫一覧 /stock の絞り込み）
+     * lowStockOnly は発注点割れ（有効な商品で 現在庫 < 発注点）だけに絞る（現在庫一覧 /stock の絞り込み）。
+     * perPage・clampPage は REST API 用（1 ページの件数の指定と、範囲外のページを丸めずに空にする）。画面は既定値のまま使う
      *
      * @return array{items: list<ProductItem>, total: int, page: int, totalPages: int, perPage: int}
      */
-    public function paginate(ProductListParams $params, bool $lowStockOnly = false): array
+    public function paginate(ProductListParams $params, bool $lowStockOnly = false, ?int $perPage = null, bool $clampPage = true): array
     {
         // 発注点割れの絞り込みは現在庫を使うので、件数も集計を結合して数える（絞り込まないときは結合しない）
         $filtered = fn (): Builder => $lowStockOnly ? $this->onlyLowStock($this->withStock($this->filtered($params))) : $this->filtered($params);
         $total = $filtered()->count();
-        $perPage = ProductListParams::PER_PAGE;
+        $perPage ??= ProductListParams::PER_PAGE;
         $totalPages = max(1, (int) ceil($total / $perPage));
-        $page = min($params->page, $totalPages);
+        $page = $clampPage ? min($params->page, $totalPages) : $params->page;
 
         $products = $this->sorted($lowStockOnly ? $filtered() : $this->withStock($filtered()), $params)
             ->forPage($page, $perPage)
