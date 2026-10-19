@@ -38,6 +38,12 @@ class ProductPolicy
         return $this->allows($user, Permission::MasterDeactivate);
     }
 
+    /** 在庫の棚卸調整（admin・staff） */
+    public function adjustStock(User $user, Product $product): bool
+    {
+        return $this->allows($user, Permission::StockAdjust);
+    }
+
     public function export(User $user): bool
     {
         return $this->allows($user, Permission::CsvExport);
