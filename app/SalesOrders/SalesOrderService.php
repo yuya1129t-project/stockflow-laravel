@@ -76,19 +76,20 @@ final class SalesOrderService
     }
 
     /**
-     * 作成（draft）。受注日は作成した日（Asia/Tokyo）で、番号は SO-受注日-連番
+     * 作成（draft）。受注日は作成した日（Asia/Tokyo）で、番号は SO-受注日-連番。
+     * REST API（#10）から作成したときは apiTokenId を渡す（操作履歴の summary に経路とトークンの ID を残す。Next.js 版と同じ文言）
      *
      * @param  SalesOrderInput  $input
      *
      * @throws ValidationException
      */
-    public function create(User $actor, array $input): SalesOrder
+    public function create(User $actor, array $input, ?int $apiTokenId = null): SalesOrder
     {
         $orderDate = DocumentNumber::today();
         self::checkDueDate($orderDate, $input['due_date']);
         $amounts = self::amounts($input['lines']);
 
-        return self::guardBusy('保存できませんでした（受注は作成していません）', fn () => OrderTransaction::run(function () use ($actor, $input, $orderDate, $amounts) {
+        return self::guardBusy('保存できませんでした（受注は作成していません）', fn () => OrderTransaction::run(function () use ($actor, $input, $orderDate, $amounts, $apiTokenId) {
             $customer = self::lockCustomer($input['customer_id']);
             $products = OrderLocks::lockProductsForLines(array_column($input['lines'], 'product_id'));
             self::throwIfAny(OrderLocks::checkLineProducts($input['lines'], $products));
@@ -106,12 +107,13 @@ final class SalesOrderService
             ]);
             self::insertLines($order->id, $input['lines']);
             $this->log($actor, 'create', $order->id, sprintf(
-                '受注 %s を作成しました（顧客 %s「%s」・明細 %d 行・合計 %s 円）',
+                '受注 %s を作成しました（顧客 %s「%s」・明細 %d 行・合計 %s 円%s）',
                 $number,
                 $customer->code,
                 $customer->name,
                 count($input['lines']),
                 number_format($amounts->total),
+                $apiTokenId === null ? '' : "・REST API（トークン #{$apiTokenId}）から作成",
             ));
 
             return $order;

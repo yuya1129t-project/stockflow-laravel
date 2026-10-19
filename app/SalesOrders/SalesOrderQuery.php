@@ -25,16 +25,17 @@ final class SalesOrderQuery
     public const int EXPORT_MAX_ROWS = 10_000;
 
     /**
-     * 一覧（絞り込み・並べ替え・ページ送り）。範囲外のページは最終ページに丸める
+     * 一覧（絞り込み・並べ替え・ページ送り）。範囲外のページは最終ページに丸める。
+     * perPage・clampPage は REST API 用（1 ページの件数の指定と、範囲外のページを丸めずに空にする）。画面は既定値のまま使う
      *
      * @return array{items: list<SalesOrderListItem>, total: int, page: int, totalPages: int, perPage: int}
      */
-    public function paginate(SalesOrderListParams $params): array
+    public function paginate(SalesOrderListParams $params, ?int $perPage = null, bool $clampPage = true): array
     {
         $total = $this->filtered($params)->count();
-        $perPage = SalesOrderListParams::PER_PAGE;
+        $perPage ??= SalesOrderListParams::PER_PAGE;
         $totalPages = max(1, (int) ceil($total / $perPage));
-        $page = min($params->page, $totalPages);
+        $page = $clampPage ? min($params->page, $totalPages) : $params->page;
 
         $orders = $this->sorted($this->filtered($params), $params)->forPage($page, $perPage)->get();
 
