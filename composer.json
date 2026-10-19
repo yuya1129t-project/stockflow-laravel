@@ -1,8 +1,8 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
-    "name": "laravel/vue-starter-kit",
+    "name": "yuya1129t-project/stockflow-laravel",
     "type": "project",
-    "description": "The skeleton application for the Laravel framework.",
+    "description": "受発注・在庫管理の社内業務システム（デモ）。Laravel 13／Inertia＋Vue 3／MySQL 8.4",
     "keywords": [
         "laravel",
         "framework"
