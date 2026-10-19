@@ -6,21 +6,12 @@ import { Separator } from '@/components/ui/separator';
 import { useCurrentUrl } from '@/composables/useCurrentUrl';
 import { toUrl } from '@/lib/utils';
 import { edit as editAppearance } from '@/routes/appearance';
-import { edit as editProfile } from '@/routes/profile';
-import { edit as editSecurity } from '@/routes/security';
 import type { NavItem } from '@/types';
 
+// 設定は外観だけ（名前・メールアドレス・パスワードの変更などは提供しない。routes/settings.php）
 const sidebarNavItems: NavItem[] = [
     {
-        title: 'Profile',
-        href: editProfile(),
-    },
-    {
-        title: 'Security',
-        href: editSecurity(),
-    },
-    {
-        title: 'Appearance',
+        title: '表示',
         href: editAppearance(),
     },
 ];
@@ -30,16 +21,13 @@ const { isCurrentOrParentUrl } = useCurrentUrl();
 
 <template>
     <div class="px-4 py-6">
-        <Heading
-            title="Settings"
-            description="Manage your profile and account settings"
-        />
+        <Heading title="設定" description="画面の表示を設定します" />
 
         <div class="flex flex-col lg:flex-row lg:space-x-12">
             <aside class="w-full max-w-xl lg:w-48">
                 <nav
                     class="flex flex-col space-y-1 space-x-0"
-                    aria-label="Settings"
+                    aria-label="設定"
                 >
                     <Button
                         v-for="item in sidebarNavItems"

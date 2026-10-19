@@ -1,7 +1,7 @@
 <?php
 
-test('returns a successful response', function () {
+test('トップはダッシュボードへ移る', function () {
     $response = $this->get(route('home'));
 
-    $response->assertOk();
+    $response->assertRedirect('/dashboard');
 });

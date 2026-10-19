@@ -1,7 +1,5 @@
 <?php
 
-use Laravel\Fortify\Features;
-
 return [
 
     /*
@@ -116,8 +114,6 @@ return [
 
     'limiters' => [
         'login' => 'login',
-        'two-factor' => 'two-factor',
-        'passkeys' => 'passkeys',
     ],
 
     /*
@@ -160,18 +156,8 @@ return [
     |
     */
 
-    'features' => [
-        Features::registration(),
-        Features::resetPasswords(),
-        Features::emailVerification(),
-        Features::twoFactorAuthentication([
-            'confirm' => true,
-            'confirmPassword' => true,
-            // 'window' => 0
-        ]),
-        Features::passkeys([
-            'confirmPassword' => true,
-        ]),
-    ],
+    // ログイン・ログアウト以外の機能（ユーザー登録・パスワードのリセット・メールアドレスの確認・2 要素認証・パスキー）は使わない。
+    // ユーザーの登録・変更は admin のユーザー管理（docs/spec.md §5）で行う
+    'features' => [],
 
 ];

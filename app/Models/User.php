@@ -4,7 +4,6 @@ namespace App\Models;
 
 use App\Enums\Role;
 use Database\Factories\UserFactory;
-use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -12,11 +11,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
-use Laravel\Fortify\Contracts\PasskeyUser;
-use Laravel\Fortify\PasskeyAuthenticatable;
-use Laravel\Fortify\TwoFactorAuthenticatable;
 
 /**
+ * メールアドレスの確認・2 要素認証・パスキーは使わない（config/fortify.php）。two_factor_* の列はスターターキットのマイグレーションの名残
+ *
  * @property int $id
  * @property string $name
  * @property string $email
@@ -33,10 +31,10 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  */
 #[Fillable(['name', 'email', 'password'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
-class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
+class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasFactory, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
+    use HasFactory, Notifiable;
 
     /**
      * 新しいモデルの既定値（DB の既定値と同じ）。
