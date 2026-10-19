@@ -40,11 +40,11 @@
 | 静的解析・整形 | Larastan（PHPStan level 7）／Pint／Vite+（フロントの lint・整形）／vue-tsc        |
 | CI             | GitHub Actions（MySQL サービスに対してテスト）                                    |
 | ローカル環境   | Laravel Sail（Docker Compose）                                                    |
-| 実行環境       | Node.js 24／npm                                                                   |
+| 実行環境       | Node.js 24／npm（Sail のコンテナ内）                                              |
 
 ## ローカル開発
 
-必要なもの: Docker（Docker Compose が使えること）、Node.js 24。PHP と Composer を手元に入れる必要はありません（コンテナの中で動かします）。
+必要なもの: Docker（Docker Compose が使えること）だけです。PHP・Composer・Node.js は手元に入れる必要はありません（Sail のコンテナに PHP 8.4 と Node.js 24 が入っており、その中で動かします）。
 
 ```bash
 # 1. PHP の依存を入れる（Composer はコンテナで実行）
@@ -65,28 +65,29 @@ cp .env.example .env
 ./vendor/bin/sail artisan key:generate
 ./vendor/bin/sail artisan migrate
 
-# 5. 画面のビルド（Node.js 24）
-npm ci
-npm run build
+# 5. 画面のビルド（Sail のコンテナの Node.js 24 で実行）
+./vendor/bin/sail npm ci
+./vendor/bin/sail npm run build
 ```
 
 - ブラウザで http://localhost:8089 を開きます
-- 他のプロジェクトとぶつからないよう、ホスト側のポートを `.env` の `APP_PORT`（8089）・`FORWARD_DB_PORT`（33069）・`VITE_PORT`（5179）で変えています。MySQL は `127.0.0.1` にだけ公開します
-- 画面を編集しながら確認するときは `npm run dev`（Vite の開発サーバー）を使います
+- 他のプロジェクトとぶつからないよう、ホスト側のポートを `.env` の `APP_PORT`（アプリ 8089）・`FORWARD_DB_PORT`（MySQL 33069）・`VITE_PORT`（Vite の開発サーバー 5179）で変えています。アプリ・MySQL・Vite はいずれも `127.0.0.1` にだけ公開します（同じネットワークの別の端末からは届きません）
+- 画面を編集しながら確認するときは `./vendor/bin/sail npm run dev` で Vite の開発サーバーを起動します（http://localhost:5179 。画面は引き続き http://localhost:8089 で開きます）
+- npm の操作は Sail のコンテナの中で行います。画面のビルド時に Wayfinder（ルートの型を生成する Vite のプラグイン）が `php artisan` を呼ぶため、PHP のあるコンテナで実行する必要があります
 - 止めるときは `./vendor/bin/sail down`（データベースのデータは Docker のボリュームに残ります）
 
 ## テスト・静的解析
 
 ```bash
-./vendor/bin/sail test              # Pest（テスト用データベース testing に対して実行）
-./vendor/bin/sail composer lint     # Pint（整形の確認のみ。直すときは composer lint:fix）
-./vendor/bin/sail composer analyse  # Larastan（PHPStan）
-npm run check                       # フロントの lint・整形の確認（Vite+）
-npm run types:check                 # フロントの型チェック（vue-tsc）
-npm run build                       # 本番用ビルド
+./vendor/bin/sail test                 # Pest（テスト用データベース testing に対して実行）
+./vendor/bin/sail composer lint        # Pint（整形の確認のみ。直すときは composer lint:fix）
+./vendor/bin/sail composer analyse     # Larastan（PHPStan）
+./vendor/bin/sail npm run check        # フロントの lint・整形の確認（Vite+）
+./vendor/bin/sail npm run types:check  # フロントの型チェック（vue-tsc）
+./vendor/bin/sail npm run build        # 本番用ビルド
 ```
 
-- テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時に自動で作られます
+- テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時（ボリュームを作るとき）に自動で作られます。作られていない場合は `./vendor/bin/sail down -v` でボリュームを消してから起動し直します（開発用のデータも消えます）
 - CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します
 
 ## 開発の進め方
