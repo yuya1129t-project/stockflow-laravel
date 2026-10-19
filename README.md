@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml)
 
-> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、発注まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
+> 現在は初期構築・DB 設計・認証と、業務機能の最初の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータ、ログインと 3 ロールの権限、商品マスタ、取引先マスタと郵便番号からの住所検索、在庫（現在庫一覧・入出庫履歴・棚卸調整）、受注・発注まで）。ほかの業務機能は下の「主な機能」のとおり **予定** です。
 
 ## このリポジトリについて
 
@@ -20,7 +20,7 @@
 | 認証・ロール権限       | admin／staff／viewer。権限はサーバー側で検査                           | 済み |
 | 商品マスタ             | 一覧・検索・登録・編集・無効化、CSV 出力・取込                         | 済み |
 | 取引先マスタ           | 一覧・検索・登録・編集・無効化、郵便番号から住所を自動入力（外部 API） | 済み |
-| 受注                   | 明細編集、税計算（1 件ごとに切り捨て）、ステータス遷移、出荷で在庫引当 | 予定 |
+| 受注                   | 明細編集、税計算（1 件ごとに切り捨て）、ステータス遷移、出荷で在庫引当 | 済み |
 | 発注                   | 明細編集、税計算（1 件ごとに切り捨て）、ステータス遷移、入荷で在庫加算 | 済み |
 | 在庫                   | 現在庫一覧（発注点割れの強調）、入出庫履歴、棚卸調整                   | 済み |
 | ダッシュボード         | 今月の受注額・未出荷数・発注点割れ・入荷待ち                           | 予定 |
@@ -311,7 +311,7 @@ erDiagram
 画面は `/stock`（現在庫一覧）・`/stock/{id}`（商品ごとの在庫・入出庫履歴・棚卸調整）です。閲覧は全ロール、棚卸調整は admin・staff だけです（ルートの `can:stock.adjust` と、Form Request の Policy `ProductPolicy::adjustStock` で二重に検査）。商品の詳細画面から在庫の画面へ移れます。
 
 - 現在庫一覧: 商品一覧と同じ検索・カテゴリ・状態・並べ替え（現在庫を含む）・20 件ずつのページ送りに、「発注点割れのみ」の絞り込み（`level=low`）を加えたものです。集計は商品一覧と同じ 1 本の SQL（`App\Products\ProductQuery`）で、発注点割れ（有効な商品で 現在庫 < 発注点）を強調します
-- 入出庫履歴: 新しい順に 20 件ずつ。種別・数量（符号付き）・理由・参照元の伝票番号（発注は詳細へのリンク。受注は画面ができるまではテキスト）・記録したユーザーを出します。ユーザーと伝票番号はまとめて引きます（N+1 にしない）
+- 入出庫履歴: 新しい順に 20 件ずつ。種別・数量（符号付き）・理由・参照元の伝票番号（受注・発注の詳細へのリンク）・記録したユーザーを出します。ユーザーと伝票番号はまとめて引きます（N+1 にしない）
 - 棚卸調整（spec §4）: 数えた実数を入力すると、現在庫との差分を `adjust` として記録します。実数は 0 以上の整数（9,999,999 まで。全角数字・桁区切りも可）、理由は必須（200 文字まで・制御文字不可）。差分は**商品の行ロックを取った後の現在庫**から求めるので、画面を開いた後に出庫があっても、記録後の在庫は入力した実数になります。差分が 0 なら何も記録しません。入出庫と操作履歴（`audit_logs`、`action = stock_adjust`）は同じトランザクションで書きます
 
 ### 在庫の整合性（行ロック・トランザクション）
@@ -402,7 +402,7 @@ draft／ordered → cancelled（取消）        received・cancelled は最終�
 - 入荷は `StockTransaction::run` の中で、`UPDATE purchase_orders SET status = 'received', updated_at = ? WHERE id = ? AND status = 'ordered' AND updated_at = ?` の**件数**を見てから、全明細の入庫を一度に記録します（`record` に全明細を渡すので、商品の行は id の順にまとめてロックされます）。同時に 2 回入荷しても、2 本目は 1 本目の確定を待ってから WHERE を評価し直して 0 件になるので、二重に入庫しません（0 件なら、遷移できない理由か競合を返します）
 - 編集とステータス変更は、画面を開いた時点の `updated_at`（version）を送り、今の値と違えば行いません（「他の人がこの発注を更新しました。…画面を開き直して最新の内容を確認してください」。入力は残り、最新の内容を開くリンクを出します）。編集だけでなくステータス変更にも効くので、見ていない明細のまま発注済にはなりません。遷移できない状態なら、競合より先にその理由を返します
     - `purchase_orders.updated_at` はマイクロ秒まで持ちます（`TIMESTAMP(6)`）。秒の精度では同じ 1 秒の中の 2 回目の更新を見分けられないためです。更新のたびに「今の時刻」と「今の値 + 1 マイクロ秒」の大きい方を書くので、時計が止まっていても値は必ず変わります（`OrderVersion::next`。Eloquent の `save` は秒の精度で書くので、伝票の更新には使いません）
-    - 受注（#8）で同じ部品を使うときは、`sales_orders.updated_at` も `TIMESTAMP(6)` にします
+    - 受注（#8）も同じ部品を使い、`sales_orders.updated_at` も `TIMESTAMP(6)` です
 
 ### ロックの順番（デッドロックしない組み合わせ）
 
@@ -428,6 +428,54 @@ draft／ordered → cancelled（取消）        received・cancelled は最終�
 - `tests/Feature/PurchaseOrders/PurchaseOrderConcurrencyTest.php`: 別プロセス（`tests/Support/purchase-order-worker.php`）の別の MySQL 接続で実際に競合させ、後の側がロック待ちに入ったことを `performance_schema.data_lock_waits` で確かめてから先の側を確定させます。同時に 2 件作成して番号が重複しない（採番の行がない日・ある日）、同時に 2 回入荷して入庫は 1 回、取引先の種別変更と作成（どちらが先でも矛盾しない）、商品の無効化と作成、作成と在庫の記録が同じ 2 商品で重なってもデッドロックしない、入荷と取消、明細 0 行にする編集と発注済への変更、発注済への変更と編集、同時の 2 本の編集
 - 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 採番を「読んでから INSERT／UPDATE」にする、入荷を「読んでから更新」にする、取引先の FOR SHARE を外す、商品の FOR SHARE を外す、商品のロックを id の逆順にする、ステータス変更の発注のロックを外す、編集の発注のロックを外す、編集・ステータス変更・入荷の updated_at の比較を外す、updated_at を秒の精度で書く
 - テストの採番の後始末: 確定させるテストは前後で全テーブルを空にし（`CommitsTransactions`）、ほかはテストのトランザクションを戻すので、採番の行は残りません（中断した実行の後も、次の実行の最初に空にします）
+
+## 受注
+
+画面は `/sales-orders`（一覧）・`/sales-orders/create`（作成）・`/sales-orders/{id}`（詳細とステータス操作）・`/sales-orders/{id}/edit`（編集）です。**発注と同じ作り・同じ共有部品**（`app/Orders`・`OrderLinesEditor.vue`）で、違いは次のとおりです。閲覧と CSV 出力は全ロール、作成・編集・ステータス変更は admin・staff だけです（ルートの `can:order.edit` と、コントローラー・Form Request の Policy `App\Policies\SalesOrderPolicy` で二重に検査）。
+
+- 一覧・CSV 出力（`GET /sales-orders/export`）: 発注と同じ絞り込み・並べ替え・上限（10,000 件を超えると 413）。絞り込みは受注番号・顧客・ステータス・受注日の期間、並べ替えは受注日・番号・顧客・納期・合計。CSV の列は受注番号・受注日・納期・顧客コード・顧客名・ステータス・明細数・小計・消費税・合計・備考です
+- 作成・編集（下書きのときだけ）: 顧客・納期（任意。受注日以降）・備考・明細。番号は `SO-YYYYMMDD-NNN`（受注日は作成した日。Asia/Tokyo）。**単価の初期値は商品の売価**です
+    - 顧客は種別が「顧客」か「顧客・仕入先」で有効な取引先だけ。取引先の行を FOR SHARE でロックしてから種別・有効を読み直します（取引先の種別変更との競合でも、顧客ではない取引先に受注が付きません。同時実行テストで確認）。明細の商品・無効の扱いは発注と同じです
+- 操作履歴（`audit_logs`、`target_type = sales_order`）: 作成・更新・ステータス変更（出荷を含む）を、伝票・明細・入出庫と同じトランザクションで記録します
+- 実装: `App\SalesOrders`（`SalesOrderService`・`SalesOrderQuery`・`SalesOrderListParams`・`SalesOrderCsvExporter`）、`App\Enums\SalesOrderStatus`（遷移の表と理由のメッセージ）、画面は `resources/js/pages/sales-orders`
+
+### ステータス遷移（spec §4）
+
+```
+draft（下書き）→ confirmed（確定）→ shipped（出荷済）
+draft／confirmed → cancelled（取消）        shipped・cancelled は最終状態
+```
+
+- 明細の編集は draft のときだけ。confirmed にするには明細が 1 行以上必要です。すべての遷移で、詳細を開いた時点の `updated_at`（version）と今の値を比べ、違えば行いません（競合）。遷移できない状態なら、競合より先にその理由を返します
+
+### 出荷の在庫引当（confirmed → shipped）
+
+```php
+StockTransaction::run(function (StockTransaction $stock) use ($id, $expected) {
+    // 1. 受注の条件付き UPDATE（件数が 0 なら、遷移できない理由か競合を返す）
+    $updated = DB::table('sales_orders')->where('id', $id)->where('status', 'confirmed')->where('updated_at', $expected)
+        ->update(['status' => 'shipped', 'updated_at' => OrderVersion::next($expected)]);
+    // 2. 全明細を一度に出庫（out・負の数量・参照元 sales_order）。商品は id の順に FOR UPDATE でまとめてロックされる
+    $result = $stock->record($userId, $entries);   // 1 行でも不足なら InsufficientStockException → 1 も含めて全体を取り消す
+    // 3. 操作履歴（同じトランザクション）
+});
+```
+
+- **二重出荷の防止**: 条件付き UPDATE の**件数**で判定します。同時に 2 回出荷しても、2 本目は 1 本目の確定を待ってから WHERE を評価し直して 0 件になるので、二重に出庫しません（「この受注は「出荷済」のため、ステータスを変更できません」）
+- **負の在庫の防止**: 別々の受注が同じ商品を同時に出荷しても、後の側は商品の行ロックを待ち、先の出庫を含めた在庫で判定します（足りなければ不足として中止）
+- **デッドロックしない**: 全明細を 1 回の `record` に渡すので、商品は明細の順ではなく id の順にロックされます。明細の順番が逆の 2 受注を同時に出荷しても、待ちは一周しません（`StockTransaction` は、同じトランザクションであとから別の商品のロックを足すと例外にするので、明細ごとに `record` を呼ぶ形にはできません）。出荷では `OrderLocks::lockProductsForLines`（FOR SHARE）を使いません
+- **在庫不足で全体を中止**: 1 行でも足りなければ `InsufficientStockException` でトランザクションごと取り消します。受注の状態・`updated_at`・入出庫・操作履歴のどれも残りません。画面は確認ダイアログのまま「在庫が足りない商品が N 品目あるため、出荷しませんでした（在庫・ステータスは変わっていません）」と、不足する商品（コード・名前）の**必要数・現在庫・不足数（単位つき）**の表を出します（商品コードの順。1 回だけの flash `shortages`）。明細も version も変わらないので、在庫を補充すれば同じ画面のまま出荷できます
+- 出荷では顧客・商品の有効を問いません（spec §3 の制限は「新規の」受注で選べないこと。発注の入荷・Next.js 版と同じ）
+- 戻り値: `SalesOrderService::changeStatus` は `['number' => string, 'from' => SalesOrderStatus, 'to' => SalesOrderStatus, 'stock' => StockRecordResult|null]` を返します（出荷以外は `stock` が null）。`stock->fellBelowReorderPoint`（`list<StockChange>`。「発注点以上 → 未満」に変わった有効な商品と前後の在庫）は、`run` の確定後にコントローラーまで返しています。#11 の通知はここで送ります（今は送っていません）
+
+ロックの順番は発注と同じです（作成: 顧客 FOR SHARE → 明細の商品 FOR SHARE → 採番の行／編集: 顧客 FOR SHARE → 受注 FOR UPDATE → 明細の商品 FOR SHARE／確定・取消: 受注 FOR UPDATE／出荷: 受注（条件付き UPDATE）→ 明細の商品 FOR UPDATE（id 順））。
+
+### テスト
+
+- `tests/Feature/SalesOrders/SalesOrderTest.php`: 作成（採番・金額・明細・操作履歴・単価の初期値）、入力検証、顧客の種別・無効、無効な商品、編集（下書きのみ・競合・同じ時刻の 2 回の保存・実在しない version）、一覧・並べ替え・CSV、権限、ステータス変更（明細 0 行で確定できない・最終状態・競合）、操作履歴の失敗で全体を取り消す
+- `tests/Feature/SalesOrders/SalesOrderShipTest.php`: 出荷で在庫が減る・参照元、在庫不足で全体を中止（1 行だけ不足でも他の行を記録しない・状態・updated_at・操作履歴が変わらない・不足の表・補充すれば出荷できる）、発注点割れに変わった商品を返す、最終状態・取消の後は出荷できない、競合・実在しない version、操作履歴の失敗で出庫も取り消す、無効な顧客・商品でも出荷できる、viewer は 403
+- `tests/Feature/SalesOrders/SalesOrderConcurrencyTest.php`（別プロセスのワーカー `tests/Support/sales-order-worker.php`。後の側のロック待ちを `performance_schema.data_lock_waits` で確かめてから先を確定）: 同時作成で番号が重複しない、同じ受注の同時の 2 回の出荷で出庫は 1 回、別々の受注が同じ商品を同時に出荷して在庫が負にならない、明細の順番が逆の 2 受注の同時出荷でデッドロックしない、取引先の種別変更と作成（どちらが先でも）、商品の無効化と作成、作成と在庫の記録、出荷と取消、明細 0 行にする編集と確定、確定と編集、同時の 2 本の編集
+- 次の変異を 1 つずつ入れ、該当するテストが落ちることを確かめています: 出荷を「読んでから更新」にする、出荷の条件から updated_at を外す、明細ごとに `record` を呼ぶ、出荷で商品を明細の順にロックする、在庫の記録の商品のロックを外す、確定・取消の受注のロックを外す、編集の受注のロックを外す、顧客の FOR SHARE を外す、編集・ステータス変更の updated_at の比較を外す
 
 ## テスト・静的解析
 

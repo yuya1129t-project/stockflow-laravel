@@ -2,13 +2,14 @@
 
 use App\Enums\DocumentKind;
 use App\Enums\PurchaseOrderStatus;
+use App\Enums\SalesOrderStatus;
 use App\Orders\DocumentNumber;
 use App\Orders\OrderAmounts;
 use App\Orders\OrderVersion;
 use App\Rules\MultiLine;
 use Carbon\CarbonImmutable;
 
-/** 受注・発注で共通の部品（app/Orders）と発注のステータス遷移（docs/spec.md §1・§3・§4） */
+/** 受注・発注で共通の部品（app/Orders）と受注・発注のステータス遷移（docs/spec.md §1・§3・§4） */
 describe('金額（OrderAmounts）', function () {
     test('小計 = Σ 数量 × 単価、税は 1 件ごとに 10% の 1 円未満切り捨て、合計 = 小計 + 税', function (array $lines, array $expected) {
         $amounts = OrderAmounts::calculate($lines);
@@ -107,6 +108,32 @@ describe('発注のステータス遷移（PurchaseOrderStatus）', function () 
         [PurchaseOrderStatus::Ordered, PurchaseOrderStatus::Draft, 1, '「発注済」から「下書き」には変更できません'],
         [PurchaseOrderStatus::Received, PurchaseOrderStatus::Cancelled, 1, 'この発注は「入荷済」のため、ステータスを変更できません'],
         [PurchaseOrderStatus::Cancelled, PurchaseOrderStatus::Ordered, 1, 'この発注は「取消」のため、ステータスを変更できません'],
+    ]);
+});
+
+describe('受注のステータス遷移（SalesOrderStatus）', function () {
+    test('遷移表: draft → confirmed／cancelled、confirmed → shipped／cancelled。shipped・cancelled は最終', function () {
+        expect(SalesOrderStatus::Draft->transitions())->toBe([SalesOrderStatus::Confirmed, SalesOrderStatus::Cancelled])
+            ->and(SalesOrderStatus::Confirmed->transitions())->toBe([SalesOrderStatus::Shipped, SalesOrderStatus::Cancelled])
+            ->and(SalesOrderStatus::Shipped->isFinal())->toBeTrue()
+            ->and(SalesOrderStatus::Cancelled->isFinal())->toBeTrue()
+            ->and(SalesOrderStatus::Draft->isEditable())->toBeTrue()
+            ->and(SalesOrderStatus::Confirmed->isEditable())->toBeFalse()
+            ->and(array_map(fn (SalesOrderStatus $s) => $s->label(), SalesOrderStatus::cases()))->toBe(['下書き', '確定', '出荷済', '取消']);
+    });
+
+    test('遷移できない理由', function (SalesOrderStatus $from, SalesOrderStatus $to, int $lines, ?string $error) {
+        expect($from->transitionError($to, $lines))->toBe($error);
+    })->with([
+        [SalesOrderStatus::Draft, SalesOrderStatus::Confirmed, 1, null],
+        [SalesOrderStatus::Draft, SalesOrderStatus::Confirmed, 0, '明細が 1 行もないため、確定にできません'],
+        [SalesOrderStatus::Draft, SalesOrderStatus::Shipped, 1, '「下書き」から「出荷済」には変更できません'],
+        [SalesOrderStatus::Draft, SalesOrderStatus::Cancelled, 0, null],
+        [SalesOrderStatus::Confirmed, SalesOrderStatus::Shipped, 1, null],
+        [SalesOrderStatus::Confirmed, SalesOrderStatus::Cancelled, 1, null],
+        [SalesOrderStatus::Confirmed, SalesOrderStatus::Draft, 1, '「確定」から「下書き」には変更できません'],
+        [SalesOrderStatus::Shipped, SalesOrderStatus::Cancelled, 1, 'この受注は「出荷済」のため、ステータスを変更できません'],
+        [SalesOrderStatus::Cancelled, SalesOrderStatus::Confirmed, 1, 'この受注は「取消」のため、ステータスを変更できません'],
     ]);
 });
 
