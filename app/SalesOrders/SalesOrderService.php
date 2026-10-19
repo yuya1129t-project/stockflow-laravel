@@ -39,6 +39,9 @@ use PDOException;
  * 同時実行（ロックの順番。どの組み合わせでも待ちが一周しない。発注と同じ）:
  * - 作成: 顧客 FOR SHARE → 明細の商品 FOR SHARE（id 順）→ 採番の行（DocumentNumber）
  * - 編集: 顧客 FOR SHARE → 受注 FOR UPDATE → 明細の商品 FOR SHARE（id 順）
+ *   顧客を受注より先にロックする理由は発注と同じ（取引先の編集は「取引先 FOR UPDATE → その取引先の受注を FOR SHARE で数える」。
+ *   今は customer_id の索引だけで数えるので逆の順でも一周しないが、将来、受注の行を読む処理が加わったときの備え。
+ *   詳しくは PurchaseOrderService の同じ節と README。順番を入れ替えないこと）
  * - ステータス変更（出荷以外）: 受注 FOR UPDATE。ロックした後に状態・明細の行数・updated_at を読む
  * - 出荷: StockTransaction::run の中で `UPDATE … WHERE id = ? AND status = 'confirmed' AND updated_at = ?` の件数を見てから、
  *   全明細の出庫を一度に記録する（商品 FOR UPDATE。id 順）。同時に 2 回出荷しても、2 本目は 1 本目の確定を待ってから
