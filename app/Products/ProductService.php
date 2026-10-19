@@ -5,9 +5,11 @@ namespace App\Products;
 use App\Models\AuditLog;
 use App\Models\Product;
 use App\Models\User;
+use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use PDOException;
 
 /**
  * 商品の更新系（登録・編集・無効化／再有効化・CSV 取込）。
@@ -21,8 +23,13 @@ use Illuminate\Validation\ValidationException;
  */
 final class ProductService
 {
+    use DetectsConcurrencyErrors;
+
     /** 操作履歴の target_type */
     public const string TARGET_TYPE = 'product';
+
+    /** 取込のトランザクションの試行回数（デッドロック・ロック待ちのタイムアウトのときに再試行する） */
+    public const int IMPORT_ATTEMPTS = 3;
 
     /** 取込の書き込みを 1 文にまとめる行数（1 行あたり 10 個前後のパラメータ。MySQL の上限 65,535 個に十分収まる） */
     public const int IMPORT_CHUNK_SIZE = 500;
@@ -108,15 +115,20 @@ final class ProductService
      * @param  list<ImportRow>  $rows
      * @return array{created: int, updated: int, unchanged: int}
      *
-     * @throws ValidationException 取込の途中で同じ商品コードが別の操作で登録された
+     * @throws ValidationException 取込の途中で同じ商品コードが別の操作で登録された・同時の取込との競合を再試行しきれなかった
      */
     public function import(User $actor, array $rows, string $fileName): array
     {
         try {
             return DB::transaction(function () use ($actor, $rows, $fileName) {
                 $codes = array_map(fn (array $row) => $row['data']['code'], $rows);
-                // 更新し得る既存の商品を、id の順にまとめてロックする（CSV の並び順に 1 行ずつロックするとデッドロックしうる）
-                $existing = Product::query()->whereIn('code', $codes)->orderBy('id')->lockForUpdate()->get()
+                // 既存の商品は、まずロックせずに code から id を引き、主キーだけを id の順にロックする。
+                // code で FOR UPDATE すると、まだない code について code の一意索引の範囲（gap）までロックし、
+                // 同時に新規の行を取り込む 2 つの取込が互いの INSERT を待ってデッドロックする（PR #20 のレビュー）
+                $ids = Product::query()->whereIn('code', $codes)->pluck('id')->all();
+                // ロックするまでに code が画面で変更されうるので、ロックした後の code で照合し直す
+                $existing = ($ids === [] ? collect() : Product::query()->whereKey($ids)->orderBy('id')->lockForUpdate()->get())
+                    ->filter(fn (Product $p) => in_array(strtoupper($p->code), $codes, true))
                     ->keyBy(fn (Product $p) => strtoupper($p->code));
 
                 $toCreate = [];
@@ -178,10 +190,19 @@ final class ProductService
                 }
 
                 return $summary;
-            });
+            }, attempts: self::IMPORT_ATTEMPTS);
         } catch (UniqueConstraintViolationException) {
+            // 同じ新規の商品コードを、別の取込・登録が同時に INSERT した
             throw ValidationException::withMessages([
                 'file' => '取込中に同じ商品コードが別の操作で登録されました。もう一度取り込んでください',
+            ]);
+        } catch (PDOException $e) {
+            // デッドロック・ロック待ちのタイムアウトを再試行しきれなかった（全体はロールバック済み）
+            if (! $this->causedByConcurrencyError($e)) {
+                throw $e;
+            }
+            throw ValidationException::withMessages([
+                'file' => 'ほかの操作と同時に取り込もうとしたため、取り込めませんでした（1 件も登録・更新していません）。もう一度取り込んでください',
             ]);
         }
     }

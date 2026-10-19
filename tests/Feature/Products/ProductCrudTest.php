@@ -112,15 +112,25 @@ test('入力の検証（日本語のメッセージ）', function (array $input,
     '文字列でない値' => [['name' => ['a']], 'name', '商品名は文字列で入力してください'],
 ]);
 
-test('上限ちょうどの値は通る', function () {
-    $this->actingAs(User::factory()->staff()->create())
+test('上限ちょうどの値は通り、切り詰めずに保存する', function () {
+    $response = $this->actingAs(User::factory()->staff()->create())
         ->post(route('products.store'), productInput([
             'code' => str_repeat('A', 20),
             'name' => str_repeat('あ', 100),
             'sales_price' => '99999999',
+            'purchase_price' => '99999999',
             'reorder_point' => '9999999',
-        ]))
-        ->assertSessionHasNoErrors();
+        ]));
+
+    $product = Product::query()->sole();
+    $response->assertSessionHasNoErrors()->assertRedirect(route('products.show', $product));
+    expect($product->only(['code', 'name', 'sales_price', 'purchase_price', 'reorder_point']))->toBe([
+        'code' => str_repeat('A', 20),
+        'name' => str_repeat('あ', 100),
+        'sales_price' => 99_999_999,
+        'purchase_price' => 99_999_999,
+        'reorder_point' => 9_999_999,
+    ]);
 });
 
 test('編集: 変更点を操作履歴に残す。商品コードも変更でき、一意違反はエラー', function () {

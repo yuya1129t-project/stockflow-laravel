@@ -26,6 +26,12 @@ test('先頭の BOM を取り除く', function () {
     expect(parsed("\u{FEFF}商品コード,商品名\n")[0]['cells'])->toBe(['商品コード', '商品名']);
 });
 
+test('先頭に BOM が 2 つ以上続いてもすべて取り除く（先頭以外の U+FEFF は値のまま）', function () {
+    expect(parsed("\u{FEFF}\u{FEFF}商品コード,商品名\n")[0]['cells'])->toBe(['商品コード', '商品名'])
+        ->and(parsed("\u{FEFF}\u{FEFF}\u{FEFF}a,b\n")[0]['cells'])->toBe(['a', 'b'])
+        ->and(parsed("a,\u{FEFF}b\n")[0]['cells'])->toBe(['a', "\u{FEFF}b"]);
+});
+
 test('囲みの中のカンマ・""・改行を扱い、レコードの開始行を返す', function () {
     expect(parsed("h1,h2\n\"a,b\",\"x\r\ny \"\"z\"\"\"\nlast,\"\"\n"))->toBe([
         ['line' => 1, 'cells' => ['h1', 'h2']],

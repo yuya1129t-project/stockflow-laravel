@@ -5,7 +5,7 @@ namespace App\Support\Csv;
 /**
  * CSV の読み込み（RFC 4180。docs/spec.md §7）。DB やフレームワークに依存しない。
  *
- * - 区切りはカンマ。改行は CRLF・LF・CR のどれでもよい（混在も可）。末尾の改行の有無は問わない。先頭の BOM は取り除く
+ * - 区切りはカンマ。改行は CRLF・LF・CR のどれでもよい（混在も可）。末尾の改行の有無は問わない。先頭の BOM（続けて複数あってもすべて）は取り除く
  * - ダブルクォートで囲んだ項目（カンマ・改行・"" を含む）に対応する。各レコードの開始行番号を返す
  * - RFC 4180 に沿わない引用は行番号付きのエラー（CsvParseException）にする。列がずれたり、後続の行が
  *   1 つの項目に飲み込まれたりしたまま取り込まないため
@@ -24,7 +24,11 @@ final class CsvParser
      */
     public static function parse(string $input): array
     {
-        $text = str_starts_with($input, CsvWriter::BOM) ? substr($input, strlen(CsvWriter::BOM)) : $input;
+        // 先頭に続く BOM はすべて取り除く（BOM 付きのファイルを、BOM を本文と見なすツールで保存し直すと 2 つ以上付く）
+        $text = $input;
+        while (str_starts_with($text, CsvWriter::BOM)) {
+            $text = substr($text, strlen(CsvWriter::BOM));
+        }
         $length = strlen($text);
 
         $records = [];

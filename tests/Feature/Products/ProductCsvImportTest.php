@@ -6,6 +6,7 @@ use App\Models\Product;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Products\ProductImportParser;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
@@ -68,6 +69,11 @@ test('code が既存なら更新、なければ新規。商品ごとの操作履
         ['user_id' => $staff->id, 'action' => 'import', 'target_type' => 'product', 'target_id' => null, 'summary' => '商品を CSV で取り込みました（products.csv: 新規 1 件・更新 1 件・変更なし 1 件）'],
     ])
         ->and($logs->every(fn (AuditLog $log) => $log->created_at !== null))->toBeTrue();
+});
+
+test('先頭に BOM が 2 つ付いたファイルも取り込める', function () {
+    expect(importResult(importCsv("\u{FEFF}\u{FEFF}".IMPORT_HEADER."P-0001,ペン,文具,本,100,50,5\r\n"))['summary'])
+        ->toBe(['created' => 1, 'updated' => 0, 'unchanged' => 0]);
 });
 
 test('有効／無効は CSV では変わらない（「状態」列は読み飛ばす）。入出庫も変えない', function () {
@@ -271,4 +277,17 @@ test('書き込みの途中で失敗したら、商品の登録・更新もす�
 
     expect($existing->fresh()?->sales_price)->toBe(100)
         ->and(Product::query()->count())->toBe(1);
+});
+
+test('デッドロックを再試行しきれなかったときは、500 にせず日本語の「もう一度取り込んでください」にする', function () {
+    // テストはトランザクションの中で動く（入れ子のトランザクションでは Laravel は再試行せず、デッドロックをそのまま投げる）
+    DB::listen(function ($query) {
+        if (str_starts_with($query->sql, 'insert into `products`')) {
+            throw new QueryException('mysql', $query->sql, [], new PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction'));
+        }
+    });
+
+    importCsv(IMPORT_HEADER."P-0001,ペン,文具,本,100,50,5\r\n")
+        ->assertRedirect()
+        ->assertSessionHasErrors(['file' => 'ほかの操作と同時に取り込もうとしたため、取り込めませんでした（1 件も登録・更新していません）。もう一度取り込んでください']);
 });
