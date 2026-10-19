@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-laravel/actions/workflows/ci.yml)
 
-> 現在は初期構築の段階です（Laravel の土台・開発環境・CI まで）。業務機能は下の「主な機能」のとおり **予定** です。
+> 現在は初期構築と DB 設計の段階です（Laravel の土台・開発環境・CI、テーブル・架空のデモデータまで）。業務機能は下の「主な機能」のとおり **予定** です。
 
 ## このリポジトリについて
 
@@ -61,9 +61,9 @@ cp .env.example .env
 # 3. コンテナを起動（アプリ: http://localhost:8089 、MySQL: 127.0.0.1:33069）
 ./vendor/bin/sail up -d
 
-# 4. アプリの鍵の生成とマイグレーション
+# 4. アプリの鍵の生成、マイグレーションとデモデータの投入
 ./vendor/bin/sail artisan key:generate
-./vendor/bin/sail artisan migrate
+./vendor/bin/sail artisan migrate --seed
 
 # 5. 画面のビルド（Sail のコンテナの Node.js 24 で実行）
 ./vendor/bin/sail npm ci
@@ -76,6 +76,148 @@ cp .env.example .env
 - npm の操作は Sail のコンテナの中で行います。画面のビルド時に Wayfinder（ルートの型を生成する Vite のプラグイン）が `php artisan` を呼ぶため、PHP のあるコンテナで実行する必要があります
 - 止めるときは `./vendor/bin/sail down`（データベースのデータは Docker のボリュームに残ります）
 
+## データベース
+
+業務仕様（[docs/spec.md](docs/spec.md) §3）のテーブルと、Laravel・スターターキットのテーブル（users・sessions・cache・jobs など）があります。
+
+```mermaid
+erDiagram
+    users ||--o{ stock_movements : "記録者"
+    users ||--o{ audit_logs : "操作者"
+    partners ||--o{ sales_orders : "顧客"
+    partners ||--o{ purchase_orders : "仕入先"
+    sales_orders ||--|{ sales_order_lines : "明細"
+    purchase_orders ||--|{ purchase_order_lines : "明細"
+    products ||--o{ sales_order_lines : ""
+    products ||--o{ purchase_order_lines : ""
+    products ||--o{ stock_movements : ""
+    sales_orders ||..o{ stock_movements : "出荷（ref）"
+    purchase_orders ||..o{ stock_movements : "入荷（ref）"
+
+    users {
+        bigint id PK
+        string email UK
+        string name
+        string role "admin / staff / viewer"
+        bool is_active
+    }
+    products {
+        bigint id PK
+        string code UK "P-0001"
+        string name
+        string category
+        string unit
+        int sales_price "0 以上"
+        int purchase_price "0 以上"
+        int reorder_point "発注点。0 以上"
+        bool is_active
+    }
+    partners {
+        bigint id PK
+        string code UK "C-0001 / S-0001"
+        string name
+        string kind "customer / supplier / both"
+        char postal_code "7 桁"
+        string address
+        string phone
+        string email
+        bool is_active
+    }
+    sales_orders {
+        bigint id PK
+        string number UK "SO-YYYYMMDD-NNN"
+        bigint customer_id FK
+        date order_date
+        date due_date
+        string status "draft / confirmed / shipped / cancelled"
+        int subtotal
+        int tax
+        int total "小計 + 税"
+    }
+    sales_order_lines {
+        bigint id PK
+        bigint sales_order_id FK "（受注, 商品）で一意"
+        bigint product_id FK
+        int quantity "1 以上"
+        int unit_price "受注時点の単価"
+    }
+    purchase_orders {
+        bigint id PK
+        string number UK "PO-YYYYMMDD-NNN"
+        bigint supplier_id FK
+        date order_date
+        date expected_date
+        string status "draft / ordered / received / cancelled"
+        int subtotal
+        int tax
+        int total "小計 + 税"
+    }
+    purchase_order_lines {
+        bigint id PK
+        bigint purchase_order_id FK "（発注, 商品）で一意"
+        bigint product_id FK
+        int quantity "1 以上"
+        int unit_price "発注時点の単価"
+    }
+    stock_movements {
+        bigint id PK
+        bigint product_id FK
+        string type "in / out / adjust"
+        int quantity "in は正・out は負・adjust は 0 以外"
+        string reason
+        string ref_type "sales_order / purchase_order / null"
+        bigint ref_id "ref_type と両方あるか両方 null"
+        bigint user_id FK
+        timestamp created_at
+    }
+    audit_logs {
+        bigint id PK
+        bigint user_id FK
+        string action
+        string target_type
+        string target_id
+        text summary
+        timestamp created_at
+    }
+    document_sequences {
+        string kind PK "SO / PO"
+        date date PK
+        int last_number "0 以上"
+    }
+```
+
+- 金額・数量は整数（円・個数）、日付は `date`。現在庫は入出庫（`stock_movements.quantity`）の合計で、入出庫と操作履歴は更新・削除しません
+- 値の範囲（価格 ≥ 0、数量 > 0、合計 = 小計 + 税、入出庫の符号、参照元の有無の一致、郵便番号 7 桁）とステータス等の値は **MySQL の CHECK 制約**でも守ります。ステータス等は文字列の列＋CHECK で表し、PHP 側は backed enum（`app/Enums`）に変換します
+- 外部キー: 伝票 → 明細は `cascade`（伝票を消すと明細も消える）、マスタ（商品・取引先）と履歴のユーザーへの参照は `restrict`（参照があれば消せない）
+
+### デモデータ
+
+```bash
+./vendor/bin/sail artisan migrate --seed   # テーブルを作ってデモデータを入れる
+./vendor/bin/sail artisan db:seed          # デモデータだけ入れ直す（このアプリのテーブルを空にしてから投入）
+```
+
+- 商品 50・取引先 20（顧客 12・仕入先 8）・受注 80・発注 40・入出庫の履歴。すべて架空です（[Next.js 版](https://github.com/yuya1129t-project/stockflow-next) と同じ手順・同じ乱数で作るので、同じ日に作れば同じデータになります）
+- 日付は投入した日から過去約 90 日に分布します。どの時点でも在庫が負にならないよう入出庫を時系列で作り、一部の商品は発注点を下回る状態にしています
+- デモ用アカウント（パスワードはすべて `demo-pass-1234`。デモ専用の値です）
+
+| ロール | メールアドレス     |
+| ------ | ------------------ |
+| admin  | admin@example.com  |
+| staff  | staff@example.com  |
+| viewer | viewer@example.com |
+
+### データを消す操作のガード
+
+- シード（全データを消して入れ直す）と、`migrate:fresh`・`db:wipe` など DB を消すコマンドは、次のどれかに当たると実行しません。`--database` で別の接続を選んだときも、実行の直前にその接続を確かめます
+    - ローカルの開発環境（`APP_ENV=local`）とテスト以外の環境（production・staging など）で、環境変数 `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` がない（DB が同じマシン上にあっても必要です。デモ環境の定期リセットでだけ設定する想定）
+    - DB のホストがローカル（`localhost`・`127.0.0.1`・`::1`・Sail の `mysql`・ソケット）以外で、同じ環境変数がない
+    - テスト用 DB（`testing`）の取り違え: テスト以外の環境から `testing` を消そうとしている（環境変数でも外せません）
+- 本番（`APP_ENV=production`）では、`migrate:fresh` などのコマンドは環境変数があっても常に禁止です（Laravel の `DB::prohibitDestructiveCommands`）。シードだけが環境変数で許可できます
+- テストは、環境が `testing` で、実際に使う DB が `testing` のときだけ動きます。設定がキャッシュされている（`config:cache` 済み）と phpunit.xml の環境変数が効かないので、テストは DB を作り直す前に中止します（`sail artisan config:clear` してから実行してください）
+- シードで消すのはこのアプリのテーブルだけです（マイグレーション履歴・キャッシュ・キューのテーブルは残します）
+- 日時は Asia/Tokyo の壁時計で保存します。DB の既定値（`CURRENT_TIMESTAMP`）とそろえるため、MySQL の接続のタイムゾーンを `+09:00`（`DB_TIMEZONE`）にしています
+
 ## テスト・静的解析
 
 ```bash
@@ -87,6 +229,7 @@ cp .env.example .env
 ./vendor/bin/sail npm run build        # 本番用ビルド
 ```
 
+- テストの並列実行（`--parallel`）には対応していません（テスト用 DB の名前を `testing` に固定して判定しているため）
 - テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時（ボリュームを作るとき）に自動で作られます。作られていない場合は `./vendor/bin/sail down -v` でボリュームを消してから起動し直します（開発用のデータも消えます）
 - CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します
 
