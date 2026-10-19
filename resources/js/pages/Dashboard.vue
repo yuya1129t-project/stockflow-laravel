@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { Head, Link } from '@inertiajs/vue3';
-import { computed } from 'vue';
 import SalesTrendChart from '@/components/dashboard/SalesTrendChart.vue';
 import { Badge } from '@/components/ui/badge';
-import { formatRate } from '@/lib/dashboard';
 import { formatNumber } from '@/lib/products';
 import { displayDate } from '@/lib/purchase-orders';
 import { stockListQuery } from '@/lib/stock';
@@ -26,20 +24,14 @@ defineOptions({
 });
 
 /** ダッシュボード（ログイン後のトップ。全ロールが閲覧可）。docs/spec.md §5-2 */
-const props = defineProps<DashboardProps>();
+defineProps<DashboardProps>();
 
 const lowStockHref = stockIndex({ query: stockListQuery({ level: 'low' }) });
 
 const monthLabel = (m: MonthlySales) => `${m.year}年${m.month}月`;
 
-const change = computed(() => props.sales.change);
-const changeArrow = computed(() =>
-    change.value.diff > 0 ? '↑' : change.value.diff < 0 ? '↓' : '→',
-);
-const changeSign = computed(() => (change.value.diff > 0 ? '+' : ''));
-
-/** 一覧に出しきれなかった件数（「他 N 件」） */
-const rest = (count: number, shown: number) => Math.max(0, count - shown);
+/** 前月比の矢印（向きと差額・増減率の文字列はサーバーで作る: App\Dashboard\DashboardPeriod::monthOverMonth） */
+const ARROWS = { up: '↑', down: '↓', flat: '→' } as const;
 
 const cardClass = 'flex min-w-0 flex-col gap-3 rounded-xl border p-4';
 const cardTitleClass = 'text-sm font-medium text-muted-foreground';
@@ -72,13 +64,11 @@ const linkClass = 'font-mono underline-offset-4 hover:underline';
                     <p class="text-sm text-muted-foreground">
                         前月比
                         <span class="font-medium text-foreground tabular-nums">
-                            <span aria-hidden="true">{{ changeArrow }} </span
-                            >{{ changeSign
-                            }}{{ formatNumber(change.diff) }} 円{{
-                                change.rate === null
-                                    ? '（前月の受注なし）'
-                                    : `（${formatRate(change.rate)}）`
-                            }}
+                            <span aria-hidden="true"
+                                >{{ ARROWS[sales.change.direction] }} </span
+                            >{{ sales.change.diff_label }} 円（{{
+                                sales.change.rate_label
+                            }}）
                         </span>
                     </p>
                     <p class="text-xs text-muted-foreground">
@@ -217,16 +207,10 @@ const linkClass = 'font-mono underline-offset-4 hover:underline';
                         </li>
                     </ul>
                     <p
-                        v-if="rest(low_stock.count, low_stock.items.length) > 0"
+                        v-if="low_stock.more > 0"
                         class="text-xs text-muted-foreground"
                     >
-                        他
-                        {{
-                            formatNumber(
-                                rest(low_stock.count, low_stock.items.length),
-                            )
-                        }}
-                        件
+                        他 {{ formatNumber(low_stock.more) }} 件
                     </p>
                 </template>
             </section>
@@ -268,24 +252,10 @@ const linkClass = 'font-mono underline-offset-4 hover:underline';
                         </li>
                     </ul>
                     <p
-                        v-if="
-                            rest(
-                                unshipped.overdue_count,
-                                unshipped.overdue.length,
-                            ) > 0
-                        "
+                        v-if="unshipped.overdue_more > 0"
                         class="text-xs text-muted-foreground"
                     >
-                        他
-                        {{
-                            formatNumber(
-                                rest(
-                                    unshipped.overdue_count,
-                                    unshipped.overdue.length,
-                                ),
-                            )
-                        }}
-                        件
+                        他 {{ formatNumber(unshipped.overdue_more) }} 件
                     </p>
                 </template>
             </section>
@@ -336,24 +306,10 @@ const linkClass = 'font-mono underline-offset-4 hover:underline';
                         </li>
                     </ul>
                     <p
-                        v-if="
-                            rest(
-                                awaiting_receipt.count,
-                                awaiting_receipt.items.length,
-                            ) > 0
-                        "
+                        v-if="awaiting_receipt.more > 0"
                         class="text-xs text-muted-foreground"
                     >
-                        他
-                        {{
-                            formatNumber(
-                                rest(
-                                    awaiting_receipt.count,
-                                    awaiting_receipt.items.length,
-                                ),
-                            )
-                        }}
-                        件
+                        他 {{ formatNumber(awaiting_receipt.more) }} 件
                     </p>
                 </template>
             </section>

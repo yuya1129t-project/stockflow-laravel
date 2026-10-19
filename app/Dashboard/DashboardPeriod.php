@@ -14,7 +14,7 @@ use DateTimeZone;
  *   （date 列と日付の文字列の比較は日付どうしの比較になり、DB セッションの time_zone の影響を受けない）
  *
  * @phpstan-type MonthRange array{year: int, month: int, key: string, start: string, end: string}
- * @phpstan-type MonthOverMonth array{diff: int, rate: float|null}
+ * @phpstan-type MonthOverMonth array{diff: int, rate: float|null, direction: 'up'|'down'|'flat', diff_label: string, rate_label: string}
  */
 final class DashboardPeriod
 {
@@ -80,19 +80,37 @@ final class DashboardPeriod
     }
 
     /**
-     * 前月比。diff = 今月 − 前月、rate = 増減率（%）。前月が 0 のときは計算できないので rate は null
+     * 前月比。diff = 今月 − 前月、rate = 増減率（%）。前月が 0 のときは計算できないので rate は null。
+     * 画面に出す文字列もここで作る（画面は受け取った値を出すだけ）:
+     * direction = 矢印の向き（up／down／flat。diff の符号）、diff_label = 符号付きの差額（+1,540・-250・0）、
+     * rate_label = 増減率（小数 1 桁の +140.0%・-25.0%。丸めると 0 なら ±0%。前月 0 円なら「前月の受注なし」）
      *
      * @return MonthOverMonth
      */
     public static function monthOverMonth(int $current, int $previous): array
     {
         $diff = $current - $previous;
+        // (diff × 100) / 前月 の順で割る（diff / 前月 × 100 より浮動小数の端数が出にくい）
+        $rate = $previous === 0 ? null : (float) ($diff * 100) / $previous;
 
         return [
             'diff' => $diff,
-            // (diff × 100) / 前月 の順で割る（diff / 前月 × 100 より浮動小数の端数が出にくい）
-            'rate' => $previous === 0 ? null : (float) ($diff * 100) / $previous,
+            'rate' => $rate,
+            'direction' => $diff > 0 ? 'up' : ($diff < 0 ? 'down' : 'flat'),
+            'diff_label' => ($diff > 0 ? '+' : '').number_format($diff),
+            'rate_label' => $rate === null ? '前月の受注なし' : self::rateLabel($rate),
         ];
+    }
+
+    /** 増減率の表示（小数 1 桁）。丸めると 0 になる値は「±0%」（「+0.0%」「-0.0%」と出さない） */
+    public static function rateLabel(float $rate): string
+    {
+        $rounded = round($rate, 1);
+        if ($rounded == 0.0) {
+            return '±0%';
+        }
+
+        return sprintf('%+.1f%%', $rounded);
     }
 
     /** "YYYY-MM"（集計結果と突き合わせるキー） */

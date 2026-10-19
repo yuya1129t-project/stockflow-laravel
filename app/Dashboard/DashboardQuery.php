@@ -19,7 +19,8 @@ use Illuminate\Support\Facades\DB;
  * 4. 入荷待ちの発注（ordered）の件数・予定日超過の件数と、入荷予定日の近い順の上位（予定日なしは最後）
  *
  * 月・日の境界は Asia/Tokyo（DashboardPeriod）。date 列とは YYYY-MM-DD の文字列で比べる（DB の time_zone に依存しない）。
- * 納期・予定日が今日のものは超過に入れない（今日より前だけ）
+ * 納期・予定日が今日のものは超過に入れない（今日より前だけ）。
+ * 一覧は上位 limit 件で切り、出しきれなかった件数（画面の「他 N 件」）を overdue_more・more で返す
  *
  * @phpstan-import-type MonthRange from DashboardPeriod
  * @phpstan-import-type MonthOverMonth from DashboardPeriod
@@ -29,9 +30,9 @@ use Illuminate\Support\Facades\DB;
  * @phpstan-type DashboardData array{
  *     today: string,
  *     sales: array{current: MonthlySales, previous: MonthlySales, change: MonthOverMonth, trend: list<MonthlySales>},
- *     unshipped: array{count: int, overdue_count: int, overdue: list<DashboardOrderItem>},
- *     low_stock: array{count: int, items: list<array{id: int, code: string, name: string, unit: string, reorder_point: int, stock: int, shortage: int}>},
- *     awaiting_receipt: array{count: int, overdue_count: int, items: list<DashboardOrderItem>},
+ *     unshipped: array{count: int, overdue_count: int, overdue: list<DashboardOrderItem>, overdue_more: int},
+ *     low_stock: array{count: int, items: list<array{id: int, code: string, name: string, unit: string, reorder_point: int, stock: int, shortage: int}>, more: int},
+ *     awaiting_receipt: array{count: int, overdue_count: int, items: list<DashboardOrderItem>, more: int},
  * }
  */
 final class DashboardQuery
@@ -67,7 +68,7 @@ final class DashboardQuery
                 'trend' => $trend,
             ],
             'unshipped' => $this->unshippedOrders($today, $limit),
-            'low_stock' => $this->products->lowStock($limit),
+            'low_stock' => self::lowStock($this->products->lowStock($limit)),
             'awaiting_receipt' => $this->awaitingPurchaseOrders($today, $limit),
         ];
     }
@@ -92,7 +93,7 @@ final class DashboardQuery
         return array_map(fn (array $m): array => [...$m, 'total' => (int) ($totals[$m['key']] ?? 0)], $months);
     }
 
-    /** @return array{count: int, overdue_count: int, overdue: list<DashboardOrderItem>} */
+    /** @return array{count: int, overdue_count: int, overdue: list<DashboardOrderItem>, overdue_more: int} */
     private function unshippedOrders(string $today, int $limit): array
     {
         $counts = DB::table('sales_orders')
@@ -110,14 +111,18 @@ final class DashboardQuery
             ->limit($limit)
             ->get(['o.id', 'o.number', 'c.name AS partner_name', 'o.due_date AS date']);
 
+        $overdueCount = (int) ($counts->overdue_count ?? 0);
+        $overdue = self::toOrderItems($rows, $today);
+
         return [
             'count' => (int) ($counts->count ?? 0),
-            'overdue_count' => (int) ($counts->overdue_count ?? 0),
-            'overdue' => self::toOrderItems($rows, $today),
+            'overdue_count' => $overdueCount,
+            'overdue' => $overdue,
+            'overdue_more' => self::more($overdueCount, count($overdue)),
         ];
     }
 
-    /** @return array{count: int, overdue_count: int, items: list<DashboardOrderItem>} */
+    /** @return array{count: int, overdue_count: int, items: list<DashboardOrderItem>, more: int} */
     private function awaitingPurchaseOrders(string $today, int $limit): array
     {
         $counts = DB::table('purchase_orders')
@@ -136,11 +141,30 @@ final class DashboardQuery
             ->limit($limit)
             ->get(['o.id', 'o.number', 's.name AS partner_name', 'o.expected_date AS date']);
 
+        $count = (int) ($counts->count ?? 0);
+        $items = self::toOrderItems($rows, $today);
+
         return [
-            'count' => (int) ($counts->count ?? 0),
+            'count' => $count,
             'overdue_count' => (int) ($counts->overdue_count ?? 0),
-            'items' => self::toOrderItems($rows, $today),
+            'items' => $items,
+            'more' => self::more($count, count($items)),
         ];
+    }
+
+    /** 一覧に出しきれなかった件数（画面の「他 N 件」）。件数 − 一覧の件数で、0 未満にはしない */
+    public static function more(int $count, int $shown): int
+    {
+        return max(0, $count - $shown);
+    }
+
+    /**
+     * @param  array{count: int, items: list<array{id: int, code: string, name: string, unit: string, reorder_point: int, stock: int, shortage: int}>}  $lowStock
+     * @return array{count: int, items: list<array{id: int, code: string, name: string, unit: string, reorder_point: int, stock: int, shortage: int}>, more: int}
+     */
+    private static function lowStock(array $lowStock): array
+    {
+        return [...$lowStock, 'more' => self::more($lowStock['count'], count($lowStock['items']))];
     }
 
     /**

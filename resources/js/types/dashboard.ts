@@ -13,12 +13,18 @@ export type MonthlySales = {
     total: number;
 };
 
-/** 前月比 */
+/** 前月比（表示用の文字列もサーバーで作る: App\Dashboard\DashboardPeriod::monthOverMonth） */
 export type MonthOverMonth = {
     /** 今月 − 前月 */
     diff: number;
     /** 増減率（%）。前月が 0 のときは null */
     rate: number | null;
+    /** 矢印の向き（diff の符号） */
+    direction: 'up' | 'down' | 'flat';
+    /** 符号付きの差額（+1,540・-250・0） */
+    diff_label: string;
+    /** 増減率（+140.0%・-25.0%・±0%）。前月 0 円なら「前月の受注なし」 */
+    rate_label: string;
 };
 
 export type DashboardOrderItem = {
@@ -57,16 +63,22 @@ export type DashboardProps = {
         overdue_count: number;
         /** 納期を過ぎた受注（納期の古い順） */
         overdue: DashboardOrderItem[];
+        /** 一覧に出しきれなかった納期切れの件数（「他 N 件」） */
+        overdue_more: number;
     };
     low_stock: {
         count: number;
         /** 不足の大きい順 */
         items: DashboardLowStockItem[];
+        /** 一覧に出しきれなかった件数（「他 N 件」） */
+        more: number;
     };
     awaiting_receipt: {
         count: number;
         overdue_count: number;
         /** 入荷予定日の近い順（予定日なしは最後） */
         items: DashboardOrderItem[];
+        /** 一覧に出しきれなかった件数（「他 N 件」） */
+        more: number;
     };
 };

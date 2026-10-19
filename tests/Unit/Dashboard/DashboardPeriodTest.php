@@ -1,6 +1,7 @@
 <?php
 
 use App\Dashboard\DashboardPeriod;
+use App\Dashboard\DashboardQuery;
 use Carbon\CarbonImmutable;
 
 /** ダッシュボードの期間と前月比（App\Dashboard\DashboardPeriod。docs/spec.md §1・§5-2） */
@@ -87,19 +88,49 @@ describe('月の範囲', function () {
 });
 
 describe('前月比', function () {
-    test('増加・減少・同じ', function (int $current, int $previous, array $expected) {
+    test('増加・減少・同じ（矢印の向き・符号付きの差額・小数 1 桁の増減率）', function (int $current, int $previous, array $expected) {
         expect(DashboardPeriod::monthOverMonth($current, $previous))->toBe($expected);
     })->with([
-        '増加' => [1500, 1000, ['diff' => 500, 'rate' => 50.0]],
-        '減少' => [750, 1000, ['diff' => -250, 'rate' => -25.0]],
-        '同じ' => [1000, 1000, ['diff' => 0, 'rate' => 0.0]],
-        '今月 0' => [0, 1000, ['diff' => -1000, 'rate' => -100.0]],
+        '増加' => [1500, 1000, ['diff' => 500, 'rate' => 50.0, 'direction' => 'up', 'diff_label' => '+500', 'rate_label' => '+50.0%']],
+        '減少' => [750, 1000, ['diff' => -250, 'rate' => -25.0, 'direction' => 'down', 'diff_label' => '-250', 'rate_label' => '-25.0%']],
+        '同じ' => [1000, 1000, ['diff' => 0, 'rate' => 0.0, 'direction' => 'flat', 'diff_label' => '0', 'rate_label' => '±0%']],
+        '今月 0' => [0, 1000, ['diff' => -1000, 'rate' => -100.0, 'direction' => 'down', 'diff_label' => '-1,000', 'rate_label' => '-100.0%']],
         // diff / 前月 × 100 だと 7.000000000000001 になる値
-        '端数が出ない' => [107, 100, ['diff' => 7, 'rate' => 7.0]],
+        '端数が出ない' => [107, 100, ['diff' => 7, 'rate' => 7.0, 'direction' => 'up', 'diff_label' => '+7', 'rate_label' => '+7.0%']],
+        '3 桁区切り' => [2_641_540, 1_100_000, ['diff' => 1_541_540, 'rate' => 140.14, 'direction' => 'up', 'diff_label' => '+1,541,540', 'rate_label' => '+140.1%']],
+        // 差額はあるが、増減率は丸めると 0（+0.0% と出さない）
+        'わずかな増加' => [100_001, 100_000, ['diff' => 1, 'rate' => 0.001, 'direction' => 'up', 'diff_label' => '+1', 'rate_label' => '±0%']],
+        'わずかな減少' => [99_999, 100_000, ['diff' => -1, 'rate' => -0.001, 'direction' => 'down', 'diff_label' => '-1', 'rate_label' => '±0%']],
     ]);
 
-    test('前月が 0 なら増減率は出さない（null）', function () {
-        expect(DashboardPeriod::monthOverMonth(1200, 0))->toBe(['diff' => 1200, 'rate' => null])
-            ->and(DashboardPeriod::monthOverMonth(0, 0))->toBe(['diff' => 0, 'rate' => null]);
+    test('前月が 0 なら増減率は出さない（null）。表示は「前月の受注なし」', function () {
+        expect(DashboardPeriod::monthOverMonth(1200, 0))->toBe(['diff' => 1200, 'rate' => null, 'direction' => 'up', 'diff_label' => '+1,200', 'rate_label' => '前月の受注なし'])
+            ->and(DashboardPeriod::monthOverMonth(0, 0))->toBe(['diff' => 0, 'rate' => null, 'direction' => 'flat', 'diff_label' => '0', 'rate_label' => '前月の受注なし']);
     });
+
+    test('増減率の表示は小数 1 桁。丸めると 0 なら「±0%」（-0.0% も出さない）', function (float $rate, string $expected) {
+        expect(DashboardPeriod::rateLabel($rate))->toBe($expected);
+    })->with([
+        '0' => [0.0, '±0%'],
+        '-0.0' => [-0.0, '±0%'],
+        '0.04 は ±0%' => [0.04, '±0%'],
+        '-0.04 は ±0%' => [-0.04, '±0%'],
+        '0.05 は +0.1%' => [0.05, '+0.1%'],
+        '-0.05 は -0.1%' => [-0.05, '-0.1%'],
+        '切り上げ' => [12.345, '+12.3%'],
+        '桁が多い' => [1234.56, '+1234.6%'],
+        '-100' => [-100.0, '-100.0%'],
+    ]);
+});
+
+describe('一覧の「他 N 件」（DashboardQuery::more）', function () {
+    test('件数 − 一覧の件数。出しきれたら 0（0 未満にしない）', function (int $count, int $shown, int $expected) {
+        expect(DashboardQuery::more($count, $shown))->toBe($expected);
+    })->with([
+        '超える' => [7, 5, 2],
+        'ちょうど' => [5, 5, 0],
+        '少ない' => [3, 3, 0],
+        '0 件' => [0, 0, 0],
+        '件数より多く出した（起きないが 0 にする）' => [2, 3, 0],
+    ]);
 });

@@ -98,6 +98,12 @@ describe('画面', function () {
                 ->where('sales.previous.total', 1100)
                 ->where('sales.change.diff', 1100)
                 ->where('sales.change.rate', 100)
+                ->where('sales.change.direction', 'up')
+                ->where('sales.change.diff_label', '+1,100')
+                ->where('sales.change.rate_label', '+100.0%')
+                ->where('unshipped.overdue_more', 0)
+                ->where('low_stock.more', 0)
+                ->where('awaiting_receipt.more', 0)
                 ->has('sales.trend', 6)
                 ->where('unshipped.count', 1)
                 ->where('unshipped.overdue_count', 1)
@@ -188,7 +194,7 @@ describe('今月の受注額・前月比・月別', function () {
             // 2200 + 440（税抜の合計 2400 ではない）
             ->and($data['sales']['current'])->toMatchArray(['key' => '2000-03', 'start' => '2000-03-01', 'end' => '2000-04-01', 'total' => 2640])
             ->and($data['sales']['previous'])->toMatchArray(['key' => '2000-02', 'total' => 1100])
-            ->and($data['sales']['change'])->toBe(['diff' => 1540, 'rate' => 140.0])
+            ->and($data['sales']['change'])->toBe(['diff' => 1540, 'rate' => 140.0, 'direction' => 'up', 'diff_label' => '+1,540', 'rate_label' => '+140.0%'])
             ->and(array_map(fn (array $m) => [$m['key'], $m['total']], $data['sales']['trend']))->toBe([
                 ['1999-10', 330],
                 ['1999-11', 0],
@@ -206,7 +212,7 @@ describe('今月の受注額・前月比・月別', function () {
         expect($data['today'])->toBe('2000-02-29')
             ->and($data['sales']['current'])->toMatchArray(['key' => '2000-02', 'total' => 1100])
             ->and($data['sales']['previous'])->toMatchArray(['key' => '2000-01', 'total' => 0])
-            ->and($data['sales']['change'])->toBe(['diff' => 1100, 'rate' => null]);
+            ->and($data['sales']['change'])->toMatchArray(['diff' => 1100, 'rate' => null, 'rate_label' => '前月の受注なし']);
     });
 
     test('年またぎ: 今月が 1 月なら前月は前年の 12 月', function () {
@@ -217,7 +223,7 @@ describe('今月の受注額・前月比・月別', function () {
 
         expect($data['sales']['current'])->toMatchArray(['key' => '2000-01', 'total' => 1100])
             ->and($data['sales']['previous'])->toMatchArray(['key' => '1999-12', 'total' => 550])
-            ->and($data['sales']['change'])->toBe(['diff' => 550, 'rate' => 100.0])
+            ->and($data['sales']['change'])->toMatchArray(['diff' => 550, 'rate' => 100.0])
             ->and(array_column($data['sales']['trend'], 'key'))->toBe(['1999-08', '1999-09', '1999-10', '1999-11', '1999-12', '2000-01']);
     });
 
@@ -227,7 +233,7 @@ describe('今月の受注額・前月比・月別', function () {
 
         expect($data['sales']['current']['total'])->toBe(0)
             ->and($data['sales']['previous']['total'])->toBe(0)
-            ->and($data['sales']['change'])->toBe(['diff' => 0, 'rate' => null]);
+            ->and($data['sales']['change'])->toBe(['diff' => 0, 'rate' => null, 'direction' => 'flat', 'diff_label' => '0', 'rate_label' => '前月の受注なし']);
     });
 
     test('今月が 0 円・前月に受注があれば -100%', function () {
@@ -235,19 +241,32 @@ describe('今月の受注額・前月比・月別', function () {
         $data = dashboardData(CarbonImmutable::parse('1999-11-01T00:00:00+09:00'));
 
         expect($data['sales']['current'])->toMatchArray(['key' => '1999-11', 'total' => 0])
-            ->and($data['sales']['change'])->toBe(['diff' => -330, 'rate' => -100.0]);
+            ->and($data['sales']['change'])->toBe(['diff' => -330, 'rate' => -100.0, 'direction' => 'down', 'diff_label' => '-330', 'rate_label' => '-100.0%']);
     });
 
-    test('DB のセッションのタイムゾーンを変えても同じ値になる（date 列と日付の文字列で比べる）', function () {
+    test('DB のセッションのタイムゾーンを変えても同じ値になる（date 列と日付の文字列で比べる。DB の現在日付を使わない）', function () {
+        // 納期・入荷予定日が「昨日」と「今日」（基準日 JST 2000-03-01）。DB の現在日付（CURDATE() など）で比べると、
+        // 実行した日の日付になって「今日」の分も超過に入るので、このテストだけで検出できる。受注日は 6 か月の範囲外
+        $dueYesterday = dashboardSalesOrder(SalesOrderStatus::Confirmed, '1999-01-01', 100, '2000-02-29');
+        dashboardSalesOrder(SalesOrderStatus::Confirmed, '1999-01-01', 100, '2000-03-01');
+        $expectedYesterday = dashboardPurchaseOrder(PurchaseOrderStatus::Ordered, '2000-02-29');
+        dashboardPurchaseOrder(PurchaseOrderStatus::Ordered, '2000-03-01');
+
         $configured = config('database.connections.mysql.timezone');
         try {
             foreach (['+00:00', '-10:00', '+14:00'] as $tz) {
                 DB::statement('SET time_zone = ?', [$tz]);
                 $data = dashboardData();
 
-                expect($data['sales']['current']['total'])->toBe(2640)
+                expect($data['today'])->toBe('2000-03-01')
+                    ->and($data['sales']['current']['total'])->toBe(2640)
                     ->and($data['sales']['previous']['total'])->toBe(1100)
-                    ->and($data['sales']['trend'][0])->toMatchArray(['key' => '1999-10', 'total' => 330]);
+                    ->and($data['sales']['trend'][0])->toMatchArray(['key' => '1999-10', 'total' => 330])
+                    ->and($data['unshipped']['overdue_count'])->toBe(1)
+                    ->and(array_column($data['unshipped']['overdue'], 'id'))->toBe([$dueYesterday->id])
+                    ->and($data['awaiting_receipt']['overdue_count'])->toBe(1)
+                    ->and(array_map(fn (array $o) => [$o['date'], $o['overdue']], $data['awaiting_receipt']['items']))->toBe([['2000-02-29', true], ['2000-03-01', false]])
+                    ->and($data['awaiting_receipt']['items'][0]['id'])->toBe($expectedYesterday->id);
             }
         } finally {
             DB::statement('SET time_zone = ?', [$configured]);
@@ -279,15 +298,20 @@ describe('未出荷の受注', function () {
         foreach (['2000-02-07', '2000-02-01', '2000-02-05', '2000-02-03', '2000-02-02', '2000-02-06', '2000-02-04'] as $due) {
             dashboardSalesOrder(SalesOrderStatus::Confirmed, '2000-01-15', 100, $due);
         }
+        // 納期切れでない未出荷（「他 N 件」は納期切れの件数から数える）
+        dashboardSalesOrder(SalesOrderStatus::Confirmed, '2000-01-15', 100, '2000-03-05');
+        dashboardSalesOrder(SalesOrderStatus::Confirmed, '2000-01-15', 100);
 
         $unshipped = dashboardData()['unshipped'];
 
-        expect($unshipped['overdue_count'])->toBe(7)
+        expect($unshipped['count'])->toBe(9)
+            ->and($unshipped['overdue_count'])->toBe(7)
+            ->and($unshipped['overdue_more'])->toBe(2)
             ->and(array_column($unshipped['overdue'], 'date'))->toBe(['2000-02-01', '2000-02-02', '2000-02-03', '2000-02-04', '2000-02-05']);
     });
 
     test('未出荷がなければ 0 件', function () {
-        expect(dashboardData()['unshipped'])->toBe(['count' => 0, 'overdue_count' => 0, 'overdue' => []]);
+        expect(dashboardData()['unshipped'])->toBe(['count' => 0, 'overdue_count' => 0, 'overdue' => [], 'overdue_more' => 0]);
     });
 });
 
@@ -322,6 +346,7 @@ describe('入荷待ちの発注', function () {
         $awaiting = dashboardData(limit: 3)['awaiting_receipt'];
 
         expect($awaiting['count'])->toBe(7)
+            ->and($awaiting['more'])->toBe(4)
             ->and($awaiting['overdue_count'])->toBe(0)
             ->and(array_column($awaiting['items'], 'date'))->toBe(['2000-03-01', '2000-03-02', '2000-03-03']);
     });
@@ -359,6 +384,7 @@ describe('発注点を下回る商品', function () {
         $lowStock = dashboardData(limit: 2)['low_stock'];
 
         expect($lowStock['count'])->toBe(3)
+            ->and($lowStock['more'])->toBe(1)
             ->and(array_column($lowStock['items'], 'id'))->toBe([$a->id, $b->id]);
     });
 });
