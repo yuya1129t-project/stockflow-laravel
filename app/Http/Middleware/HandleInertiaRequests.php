@@ -2,6 +2,8 @@
 
 namespace App\Http\Middleware;
 
+use App\Auth\Permission;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -35,11 +37,24 @@ class HandleInertiaRequests extends Middleware
      */
     public function share(Request $request): array
     {
+        $user = $request->user();
+
         return [
             ...parent::share($request),
             'name' => config('app.name'),
-            'auth' => [
-                'user' => $request->user(),
+            // 画面に渡すのは表示に使う項目だけ。permissions はメニューやボタンの表示の切り替え用（検査はサーバー側で行う）
+            'auth' => $user instanceof User ? [
+                'user' => [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'role' => $user->role->value,
+                    'roleLabel' => $user->role->label(),
+                ],
+                'permissions' => array_map(fn (Permission $p) => $p->value, Permission::grantedTo($user->role)),
+            ] : [
+                'user' => null,
+                'permissions' => [],
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];

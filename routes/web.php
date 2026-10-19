@@ -1,11 +1,14 @@
 <?php
 
+use App\Auth\Permission;
 use Illuminate\Support\Facades\Route;
 
-Route::inertia('/', 'Welcome')->name('home');
+// トップはダッシュボードへ（未ログインならログイン画面へ）
+Route::redirect('/', '/dashboard')->name('home');
 
-Route::middleware(['auth', 'verified'])->group(function () {
-    Route::inertia('dashboard', 'Dashboard')->name('dashboard');
+// ログインが必要な画面。権限はルートごとに ->can(Permission::...) で検査する（docs/spec.md §2）
+Route::middleware(['auth'])->group(function () {
+    Route::inertia('dashboard', 'Dashboard')->can(Permission::View)->name('dashboard');
 });
 
 require __DIR__.'/settings.php';
