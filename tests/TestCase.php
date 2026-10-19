@@ -5,11 +5,20 @@ namespace Tests;
 use App\Support\Database\DestructiveOperationGuard;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Laravel\Fortify\Features;
 use RuntimeException;
 
 abstract class TestCase extends BaseTestCase
 {
+    /** テストから外部 API（zipcloud など）を呼ばない。Http::fake で差し替えていない要求は例外にする */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Http::preventStrayRequests();
+    }
+
     /**
      * DB を作り直すトレイト（RefreshDatabase など）が動く前に、接続先がテスト用 DB（testing）であることを確かめる。
      * 開発用 DB を指したままテストを走らせてデータを消す事故を防ぐ。設定がキャッシュされていたら中止する
