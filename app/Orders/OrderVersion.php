@@ -4,6 +4,7 @@ namespace App\Orders;
 
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use DateTimeImmutable;
 
 /**
  * 伝票の競合の検出（楽観的ロック）。受注・発注で共通。
@@ -21,7 +22,7 @@ final class OrderVersion
     /** version の形式（Asia/Tokyo の壁時計。DB に保存している値と同じ） */
     public const string FORMAT = 'Y-m-d H:i:s.u';
 
-    private const string PATTERN = '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/';
+    private const string PATTERN = '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}\z/';
 
     /** 画面に渡す version */
     public static function of(?CarbonInterface $updatedAt): string
@@ -29,10 +30,18 @@ final class OrderVersion
         return $updatedAt?->format(self::FORMAT) ?? '';
     }
 
-    /** 送られた version。形式が違えば null（競合として扱う） */
+    /**
+     * 送られた version。形式が違う・実在しない日時（2026-02-30、99:99:99 など）なら null（競合として扱う）。
+     * 解析した結果を同じ書式に戻して入力と完全に一致するかを確かめる（繰り上がった値を条件付き更新の WHERE に渡さない）
+     */
     public static function parse(mixed $value): ?string
     {
-        return is_string($value) && preg_match(self::PATTERN, $value) === 1 ? $value : null;
+        if (! is_string($value) || preg_match(self::PATTERN, $value) !== 1) {
+            return null;
+        }
+        $parsed = DateTimeImmutable::createFromFormat('!'.self::FORMAT, $value);
+
+        return $parsed !== false && $parsed->format(self::FORMAT) === $value ? $value : null;
     }
 
     /** 今の updated_at が、画面を開いた時点のものと同じか */

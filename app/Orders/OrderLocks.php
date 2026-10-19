@@ -43,7 +43,7 @@ final class OrderLocks
             return "{$partner->code}「{$partner->name}」は{$label}ではありません（種別が「{$label}」か「顧客・仕入先」の取引先を選んでください）";
         }
         if (! $partner->is_active) {
-            return "{$partner->code}「{$partner->name}」は無効になっているため選べません";
+            return "{$partner->code}「{$partner->name}」は無効です。別の{$label}を選んでください";
         }
 
         return $partner;

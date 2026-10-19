@@ -143,7 +143,7 @@ describe('作成', function () {
         }
     })->with([
         '顧客' => [PartnerKind::Customer->value, true, 'X-0001「架空」は仕入先ではありません（種別が「仕入先」か「顧客・仕入先」の取引先を選んでください）'],
-        '無効な仕入先' => [PartnerKind::Supplier->value, false, 'X-0001「架空」は無効になっているため選べません'],
+        '無効な仕入先' => [PartnerKind::Supplier->value, false, 'X-0001「架空」は無効です。別の仕入先を選んでください'],
         '顧客・仕入先' => [PartnerKind::Both->value, true, null],
     ]);
 
@@ -265,6 +265,32 @@ describe('編集', function () {
             ->and(poVersion($this->order) > $afterFirst)->toBeTrue();
     });
 
+    test('競合: 実在しない日時の version（2026-02-30・99:99:99 など）は競合として扱い、何も変えない', function (string $version) {
+        $before = poVersion($this->order);
+
+        $this->put(route('purchase-orders.update', $this->order), [...poInput($this->supplier, [[$this->p, 7, 100]]), 'version' => $version])
+            ->assertSessionHasErrors(['conflict' => PurchaseOrderService::conflictMessage()]);
+
+        expect(PurchaseOrderLine::query()->sole()->quantity)->toBe(1)
+            ->and(poVersion($this->order))->toBe($before)
+            ->and(AuditLog::query()->where('action', 'update')->count())->toBe(0);
+    })->with(['2026-02-30 10:00:00.000000', '2026-10-19 99:99:99.000000', '2026-10-19 24:00:00.000000', "2026-10-19 10:00:00.000000\n"]);
+
+    test('仕入先が無効になった下書き: 保存には有効な仕入先が必要（画面ではその仕入先を選べない形で出す）。発注済にはそのままできる', function () {
+        $this->supplier->update(['is_active' => false]);
+        $message = "S-0001「{$this->supplier->name}」は無効です。別の仕入先を選んでください";
+
+        $this->put(route('purchase-orders.update', $this->order), [...poInput($this->supplier, [[$this->p, 1, 100]], ['note' => '備考だけ直す']), 'version' => poVersion($this->order)])
+            ->assertSessionHasErrors(['supplier_id' => $message]);
+        $this->get(route('purchase-orders.edit', $this->order))->assertInertia(fn (Assert $page) => $page
+            ->component('purchase-orders/Edit')
+            ->where('suppliers', fn ($suppliers) => collect($suppliers)->contains(fn ($o) => $o['id'] === $this->supplier->id && $o['is_active'] === false)));
+
+        // ステータス変更では仕入先の有効を問わない
+        $this->post(route('purchase-orders.status', $this->order), ['to' => 'ordered', 'version' => poVersion($this->order)])->assertSessionHasNoErrors();
+        expect($this->order->fresh()->status)->toBe(PurchaseOrderStatus::Ordered);
+    });
+
     test('下書き以外は編集できない（画面は詳細へ戻し、保存はエラー）', function (PurchaseOrderStatus $status) {
         DB::table('purchase_orders')->where('id', $this->order->id)->update(['status' => $status->value]);
 
@@ -356,6 +382,18 @@ describe('ステータス変更（入荷以外）', function () {
         $this->post(route('purchase-orders.status', $order), ['to' => 'ordered', 'version' => poVersion($order)])->assertSessionHasNoErrors();
         expect($order->fresh()->status)->toBe(PurchaseOrderStatus::Ordered);
     });
+
+    test('競合: 実在しない日時の version ではステータスを変更しない（日本語の競合エラー）', function (string $version) {
+        $order = poCreate($this, [[$this->p, 1, 100]]);
+        $before = poVersion($order);
+
+        $this->post(route('purchase-orders.status', $order), ['to' => 'ordered', 'version' => $version])
+            ->assertSessionHasErrors(['conflict' => PurchaseOrderService::statusConflictMessage()]);
+
+        expect($order->fresh()->status)->toBe(PurchaseOrderStatus::Draft)
+            ->and(poVersion($order))->toBe($before)
+            ->and(AuditLog::query()->where('action', 'status_change')->count())->toBe(0);
+    })->with(['2026-02-30 10:00:00.000000', '2026-10-19 99:99:99.000000']);
 });
 
 describe('一覧・詳細・CSV 出力', function () {
@@ -387,10 +425,27 @@ describe('一覧・詳細・CSV 出力', function () {
     });
 
     test('並べ替え: 番号は桁数も見る（-1000 は -999 の後）・合計・仕入先', function () use ($numbers) {
-        expect($numbers($this->get(route('purchase-orders.index', ['sort' => 'number', 'order' => 'asc']))))->toBe(['PO-20261001-001', 'PO-20261002-001', 'PO-20261002-002', 'PO-20261002-1000'])
-            ->and($numbers($this->get(route('purchase-orders.index', ['sort' => 'total', 'order' => 'asc']))))->toBe(['PO-20261002-1000', 'PO-20261002-001', 'PO-20261002-002', 'PO-20261001-001'])
-            ->and($numbers($this->get(route('purchase-orders.index', ['sort' => 'supplier', 'order' => 'asc']))))->toBe(['PO-20261001-001', 'PO-20261002-001', 'PO-20261002-002', 'PO-20261002-1000']);
+        // 同じ日の 999（文字列の順では -1000 が -999 より前になる。桁数で並べないと昇順・降順とも崩れる）
+        PurchaseOrder::factory()->create([
+            'supplier_id' => $this->s2->id, 'number' => 'PO-20261002-999', 'order_date' => '2026-10-02', 'status' => 'received',
+            'subtotal' => 150, 'tax' => 0, 'total' => 150,
+        ]);
+        $ascending = ['PO-20261001-001', 'PO-20261002-001', 'PO-20261002-002', 'PO-20261002-999', 'PO-20261002-1000'];
+
+        expect($numbers($this->get(route('purchase-orders.index', ['sort' => 'number', 'order' => 'asc']))))->toBe($ascending)
+            ->and($numbers($this->get(route('purchase-orders.index', ['sort' => 'number', 'order' => 'desc']))))->toBe(array_reverse($ascending))
+            ->and($numbers($this->get(route('purchase-orders.index', ['sort' => 'total', 'order' => 'asc']))))->toBe(['PO-20261002-1000', 'PO-20261002-001', 'PO-20261002-999', 'PO-20261002-002', 'PO-20261001-001'])
+            ->and($numbers($this->get(route('purchase-orders.index', ['sort' => 'supplier', 'order' => 'asc']))))->toBe(['PO-20261001-001', 'PO-20261002-001', 'PO-20261002-002', 'PO-20261002-1000', 'PO-20261002-999']);
     });
+
+    test('日付の絞り込みに NULL バイトなど形の違う値が来ても例外にせず、条件なしとして扱う（一覧・CSV）', function (string $field) use ($numbers) {
+        foreach (["2026-10\0-19", "2026\0-10-01", '2026-10-1', '２０２６-10-01', "2026-10-01\n2026"] as $value) {
+            expect($numbers($this->get(route('purchase-orders.index', [$field => $value]))))->toHaveCount(4);
+            $csv = $this->get(route('purchase-orders.export', [$field => $value]));
+            $csv->assertOk();
+            expect(CsvParser::parse(substr((string) $csv->getContent(), 3)))->toHaveCount(5); // 見出し＋4 件
+        }
+    })->with(['from', 'to']);
 
     test('20 件ずつページ送り（範囲外のページは最終ページ）', function () {
         PurchaseOrder::factory()->count(20)->create(['supplier_id' => $this->s1->id, 'order_date' => '2026-09-01']);

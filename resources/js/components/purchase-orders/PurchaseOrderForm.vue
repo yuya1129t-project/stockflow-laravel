@@ -60,6 +60,13 @@ function submit() {
     form.submit(props.action, { preserveScroll: true });
 }
 
+// 選んでいる仕入先が無効（編集で、今の仕入先が無効になった下書き）。保存には有効な仕入先が必要なので案内する
+const selectedSupplierInactive = computed(
+    () =>
+        props.suppliers.find((s) => String(s.id) === form.supplier_id)
+            ?.is_active === false,
+);
+
 const selectClass =
     'h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive dark:bg-input/30';
 </script>
@@ -95,7 +102,7 @@ const selectClass =
                     name="supplier_id"
                     :class="selectClass"
                     :aria-invalid="errors.supplier_id ? true : undefined"
-                    aria-describedby="supplier_id-error"
+                    aria-describedby="supplier_id-hint supplier_id-error"
                     required
                 >
                     <option value="">仕入先を選択</option>
@@ -103,11 +110,20 @@ const selectClass =
                         v-for="s in suppliers"
                         :key="s.id"
                         :value="String(s.id)"
+                        :disabled="!s.is_active"
                     >
                         {{ s.code }} {{ s.name
                         }}{{ s.is_active ? '' : '（無効）' }}
                     </option>
                 </select>
+                <p
+                    v-if="selectedSupplierInactive"
+                    id="supplier_id-hint"
+                    class="text-sm text-destructive"
+                    data-test="supplier-inactive"
+                >
+                    この仕入先は無効です。別の仕入先を選んでください
+                </p>
                 <InputError
                     id="supplier_id-error"
                     :message="errors.supplier_id"

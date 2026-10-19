@@ -85,13 +85,16 @@ final readonly class PurchaseOrderListParams
         ];
     }
 
-    /** 実在する日付（YYYY-MM-DD）だけを残す */
+    /** 実在する日付（YYYY-MM-DD）だけを残す。形を先に厳密に検査する（NULL バイトなどを含む値で解析の例外にしない） */
     private static function date(mixed $value): string
     {
         if (! is_string($value)) {
             return '';
         }
         $value = trim($value);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}\z/', $value) !== 1) {
+            return '';
+        }
         $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
 
         return $date !== false && $date->format('Y-m-d') === $value ? $value : '';

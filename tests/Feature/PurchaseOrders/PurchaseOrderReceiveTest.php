@@ -115,6 +115,19 @@ test('競合: 詳細を開いた後に更新されていたら入荷しない（
     expect(app(StockQuery::class)->stock($this->a->id))->toBe(7);
 });
 
+test('競合: 実在しない日時の version（2026-02-30・99:99:99）では入荷しない。発注・在庫・操作履歴は変わらない', function (string $version) {
+    $order = receiveTestOrder(PurchaseOrderStatus::Ordered, [[$this->a, 5]]);
+    $before = receiveVersion($order);
+
+    $this->actingAs($this->staff)->post(route('purchase-orders.status', $order), ['to' => 'received', 'version' => $version])
+        ->assertSessionHasErrors(['conflict' => PurchaseOrderService::statusConflictMessage()]);
+
+    expect($order->fresh()->status)->toBe(PurchaseOrderStatus::Ordered)
+        ->and(receiveVersion($order))->toBe($before)
+        ->and(app(StockQuery::class)->stock($this->a->id))->toBe(2)
+        ->and(AuditLog::query()->count())->toBe(0);
+})->with(['2026-02-30 10:00:00.000000', '2026-10-19 99:99:99.000000', '2026-13-01 00:00:00.000000']);
+
 test('操作履歴の保存に失敗したら、入荷（ステータス・入庫）も取り消す', function () {
     $order = receiveTestOrder(PurchaseOrderStatus::Ordered, [[$this->a, 5]]);
     AuditLog::creating(function () {

@@ -37,8 +37,9 @@ use PDOException;
  * 同時実行（ロックの順番。どの組み合わせでも待ちが一周しない）:
  * - 作成: 仕入先 FOR SHARE → 明細の商品 FOR SHARE（id 順）→ 採番の行（DocumentNumber）
  * - 編集: 仕入先 FOR SHARE → 発注 FOR UPDATE → 明細の商品 FOR SHARE（id 順）。
- *   仕入先を発注より先にロックする（取引先の編集は「取引先 FOR UPDATE → その取引先の発注を FOR SHARE で数える」ので、
- *   発注を先に持ったまま取引先を待つと、待ちが一周する）
+ *   仕入先を発注より先にロックする（取引先の編集は「取引先 FOR UPDATE → その取引先の発注を FOR SHARE で数える」。
+ *   今は件数を supplier_id の索引だけで数えるので発注の本体の行を待たず、逆の順でも一周しない。将来、発注の行を読む処理
+ *   （番号の一覧など）が加わると、発注を先に持ったまま取引先を待つ編集と待ちが一周する（PR #22 のレビューで確認）。その備え）
  * - ステータス変更（入荷以外）: 発注 FOR UPDATE。ロックした後に状態・明細の行数・updated_at を読む
  * - 入荷: StockTransaction::run の中で `UPDATE … WHERE id = ? AND status = 'ordered' AND updated_at = ?` の件数を見てから、
  *   全明細の入庫を一度に記録する（商品 FOR UPDATE。id 順）。同時に 2 回入荷しても、2 本目は 1 本目の確定を待ってから

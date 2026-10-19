@@ -65,7 +65,13 @@ describe('競合の検出（OrderVersion）', function () {
             ->and(OrderVersion::matches(null, '2026-10-19 10:00:00.123456'))->toBeFalse()
             ->and(OrderVersion::parse('2026-10-19 10:00:00'))->toBeNull()
             ->and(OrderVersion::parse(['x']))->toBeNull()
-            ->and(OrderVersion::parse('2026-10-19 10:00:00.000000'))->toBe('2026-10-19 10:00:00.000000');
+            ->and(OrderVersion::parse('2026-10-19 10:00:00.000000'))->toBe('2026-10-19 10:00:00.000000')
+            // 形は合っていても実在しない日時は null（繰り上がった値にしない）
+            ->and(OrderVersion::parse('2026-02-30 10:00:00.000000'))->toBeNull()
+            ->and(OrderVersion::parse('2026-10-19 99:99:99.000000'))->toBeNull()
+            ->and(OrderVersion::parse('2026-10-19 24:00:00.000000'))->toBeNull()
+            ->and(OrderVersion::parse("2026-10-19 10:00:00.000000\n"))->toBeNull()
+            ->and(OrderVersion::parse('2028-02-29 23:59:59.999999'))->toBe('2028-02-29 23:59:59.999999');
     });
 
     test('次の値は今の値より必ず大きい（時計が止まっていても・戻っても）', function () {
