@@ -65,3 +65,7 @@ yarn-error.log
 /boost.json
 /opencode.json
 /opencode.jsonc
+
+# ブラウザテスト（Pest）の失敗時のスクリーンショット・トレース
+/tests/Browser/Screenshots
+/tests/Browser/Traces
