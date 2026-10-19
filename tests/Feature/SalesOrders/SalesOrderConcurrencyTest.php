@@ -10,10 +10,13 @@ use App\Models\SalesOrderLine;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Orders\DocumentNumber;
+use App\Orders\OrderTransaction;
 use App\Orders\OrderVersion;
 use App\SalesOrders\SalesOrderService;
 use App\Stock\StockQuery;
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Tests\Support\CommitsTransactions;
 use Tests\Support\StockWorker;
 
@@ -95,8 +98,8 @@ test('採番: 同時に 2 件作成しても番号は重複しない（後の側
     $first = soWorker(['op' => 'create', 'userId' => $this->userId, 'input' => $input, 'hold' => true]);
     $first->waitUntilHolding();
     $second = soWorker(['op' => 'create', 'userId' => $this->userId, 'input' => $input]);
-    // 待たせている相手は確かめない（行がない日は、待たせている側のスレッドが後の側自身として観測される。発注のテストと同じ）
-    StockWorker::waitForLockWait($second->connectionId());
+    // 行がない日は、先の側が INSERT した行の暗黙のロックを後の側が待つ（待たせている相手はトランザクションから求める: StockWorker::lockWaits）
+    StockWorker::waitForLockWait($second->connectionId(), $first->connectionId());
     $first->release();
     $a = $first->result();
     $b = $second->result();
@@ -143,6 +146,7 @@ describe('出荷の同時実行', function () {
         $a = soConcurrencyOrder($this->customer, SalesOrderStatus::Confirmed, [[$this->p1, 3]]);
         $b = soConcurrencyOrder($this->customer, SalesOrderStatus::Confirmed, [[$this->p1, 3]]);
 
+        $versionB = soConcurrencyVersion($b);
         $first = soWorker([...soShipPayload($this->userId, $a), 'hold' => true]);
         $first->waitUntilHolding();
         $second = soWorker(soShipPayload($this->userId, $b));
@@ -151,6 +155,7 @@ describe('出荷の同時実行', function () {
         $ra = $first->result();
         $rb = $second->result();
 
+        // 負け側（b）は、待ち合わせた後でも受注の更新（ステータス・updated_at）と操作履歴が残らない（不足の例外で全体が取り消される）
         expect($ra['outcome'])->toBe('ok')
             ->and($rb)->toMatchArray([
                 'outcome' => 'insufficient',
@@ -159,7 +164,69 @@ describe('出荷の同時実行', function () {
             ->and(app(StockQuery::class)->stock($this->p1->id))->toBe(2)
             ->and($a->fresh()->status)->toBe(SalesOrderStatus::Shipped)
             ->and($b->fresh()->status)->toBe(SalesOrderStatus::Confirmed)
-            ->and(DB::table('stock_movements')->where('ref_type', 'sales_order')->where('ref_id', $b->id)->count())->toBe(0);
+            ->and(soConcurrencyVersion($b))->toBe($versionB)
+            ->and(DB::table('stock_movements')->where('ref_type', 'sales_order')->where('ref_id', $b->id)->count())->toBe(0)
+            ->and(DB::table('audit_logs')->where('action', SalesOrderService::STATUS_ACTION)->pluck('target_id')->all())->toBe([(string) $a->id]);
+    });
+
+    test('出荷がデッドロックの負け側になっても、再試行（2 回目）で出荷でき、出庫・操作履歴・updated_at の更新は 1 回分だけ', function () {
+        $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Confirmed, [[$this->p1, 3], [$this->p2, 2]]);
+        $payload = soShipPayload($this->userId, $order);
+
+        // 相手: 変更の多いトランザクションにしてから（InnoDB に出荷の側を取り消させる）、商品 p2 の行を押さえる
+        $peer = StockWorker::peer('so_holder');
+        $peer->beginTransaction();
+        foreach (range(1, 20) as $i) {
+            $peer->table('audit_logs')->insert(['user_id' => $this->userId, 'action' => 'so_peer', 'summary' => "相手 {$i}", 'created_at' => now()]);
+        }
+        $peer->select('SELECT id FROM products WHERE id = ? FOR UPDATE', [$this->p2->id]);
+        $peerId = StockWorker::connectionIdOf($peer);
+
+        // 1 回目の試行: 受注の行を更新し、商品 p1 をロックしてから、相手の持つ p2 を待つ
+        $ship = soWorker($payload);
+        StockWorker::waitForLockWait($ship->connectionId(), $peerId);
+        // 相手が受注の行を要求すると待ちが一周する（デッドロック）。出荷の側が取り消され、相手は受注の行のロックを得る
+        $peer->select('SELECT id FROM sales_orders WHERE id = ? FOR UPDATE', [$order->id]);
+        // 2 回目の試行: 受注の行（相手が待ちを経て得たロック）を待つ
+        StockWorker::waitForLockWait($ship->connectionId(), $peerId);
+        $peer->rollBack();
+        $result = $ship->result();
+
+        $stock = app(StockQuery::class);
+        expect($result['outcome'])->toBe('ok')
+            ->and($result['attempts'])->toBe(2)
+            ->and($order->fresh()->status)->toBe(SalesOrderStatus::Shipped)
+            ->and(soConcurrencyVersion($order))->not->toBe($payload['version'])
+            ->and([$stock->stock($this->p1->id), $stock->stock($this->p2->id)])->toBe([2, 3])
+            ->and(DB::table('stock_movements')->where('ref_type', 'sales_order')->where('ref_id', $order->id)->orderBy('product_id')->pluck('quantity')->all())->toBe([-3, -2])
+            ->and(DB::table('audit_logs')->where('action', SalesOrderService::STATUS_ACTION)->where('target_id', (string) $order->id)->count())->toBe(1)
+            ->and(DB::table('audit_logs')->where('action', 'so_peer')->count())->toBe(0);
+    });
+
+    test('出荷がロック待ちのタイムアウト（1205）になったら再試行せず「混み合っています」を返し、受注・在庫・操作履歴は変わらない', function () {
+        $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Confirmed, [[$this->p1, 3]]);
+        $version = soConcurrencyVersion($order);
+        $holder = StockWorker::peer('so_holder');
+        $holder->beginTransaction();
+        $holder->select('SELECT id FROM products WHERE id = ? FOR UPDATE', [$this->p1->id]);
+        $attempts = 0;
+        Event::listen(TransactionBeginning::class, function () use (&$attempts) {
+            $attempts++;
+        });
+
+        // 画面からの出荷（このプロセスの接続）。在庫のトランザクションのロック待ちの上限（10 秒）で 1205 になる
+        $this->actingAs(User::query()->findOrFail($this->userId))
+            ->post(route('sales-orders.status', $order), ['to' => 'shipped', 'version' => $version])
+            ->assertRedirect()
+            ->assertSessionHasErrors(['form' => OrderTransaction::busyMessage('出荷できませんでした（在庫は変わっていません）')]);
+        $holder->rollBack();
+
+        expect($attempts)->toBe(1)
+            ->and($order->fresh()->status)->toBe(SalesOrderStatus::Confirmed)
+            ->and(soConcurrencyVersion($order))->toBe($version)
+            ->and(app(StockQuery::class)->stock($this->p1->id))->toBe(5)
+            ->and(DB::table('stock_movements')->where('ref_type', 'sales_order')->count())->toBe(0)
+            ->and(DB::table('audit_logs')->where('action', SalesOrderService::STATUS_ACTION)->count())->toBe(0);
     });
 
     test('明細の順番が逆の 2 受注を同時に出荷してもデッドロックしない（全明細を一度に渡し、商品は id の順にロックされる）', function () {
@@ -264,28 +331,19 @@ test('作成と在庫の記録が同じ 2 商品で重なってもデッドロ�
 });
 
 describe('ステータス変更・編集が受注の行のロックで順番待ちになる', function () {
-    beforeEach(function () {
-        $this->holder = StockWorker::peer('so_holder');
-    });
-
-    function holdSalesOrderRow(object $test, SalesOrder $order): void
-    {
-        $test->holder->beginTransaction();
-        $test->holder->select('SELECT id FROM sales_orders WHERE id = ? FOR UPDATE', [$order->id]);
-    }
+    // 先の側は確定の直前（受注の行のロックを持ったまま）で止め、後の側がその行を待っていることを確かめてから確定させる。
+    // 2 本がそろって 3 本目のロックを待つ形にはしない（放されたロックをどちらが先に得るかは InnoDB が決め、保証がない）
 
     test('出荷と取消が同時: 先の出荷が確定し、取消は出荷済のため変更できない（在庫は 1 回分）', function () {
         StockMovement::factory()->create(['product_id' => $this->p1->id, 'type' => StockMovementType::In, 'quantity' => 5]);
         $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Confirmed, [[$this->p1, 5]]);
         $version = soConcurrencyVersion($order);
-        holdSalesOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $ship = soWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'shipped', 'version' => $version]);
-        StockWorker::waitForLockWait($ship->connectionId(), $holderId);
+        $ship = soWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'shipped', 'version' => $version, 'hold' => true]);
+        $ship->waitUntilHolding();
         $cancel = soWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'cancelled', 'version' => $version]);
-        StockWorker::waitForLockWait($cancel->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($cancel->connectionId(), $ship->connectionId());
+        $ship->release();
         $a = $ship->result();
         $b = $cancel->result();
 
@@ -298,14 +356,12 @@ describe('ステータス変更・編集が受注の行のロックで順番待�
     test('明細を 0 行にする編集が先・確定への変更が後: 明細 0 行の確定はできない', function () {
         $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Draft, [[$this->p1, 5]]);
         $version = soConcurrencyVersion($order);
-        holdSalesOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $edit = soWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => soConcurrencyInput($this->customer, []), 'version' => $version]);
-        StockWorker::waitForLockWait($edit->connectionId(), $holderId);
+        $edit = soWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => soConcurrencyInput($this->customer, []), 'version' => $version, 'hold' => true]);
+        $edit->waitUntilHolding();
         $toConfirmed = soWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'confirmed', 'version' => $version]);
-        StockWorker::waitForLockWait($toConfirmed->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($toConfirmed->connectionId(), $edit->connectionId());
+        $edit->release();
         $a = $edit->result();
         $b = $toConfirmed->result();
 
@@ -318,14 +374,12 @@ describe('ステータス変更・編集が受注の行のロックで順番待�
     test('確定への変更が先・編集が後: 編集は確定のため保存せず、明細は元のまま', function () {
         $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Draft, [[$this->p1, 5]]);
         $version = soConcurrencyVersion($order);
-        holdSalesOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $toConfirmed = soWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'confirmed', 'version' => $version]);
-        StockWorker::waitForLockWait($toConfirmed->connectionId(), $holderId);
+        $toConfirmed = soWorker(['op' => 'status', 'userId' => $this->userId, 'id' => $order->id, 'to' => 'confirmed', 'version' => $version, 'hold' => true]);
+        $toConfirmed->waitUntilHolding();
         $edit = soWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => soConcurrencyInput($this->customer, [[$this->p1, 9]]), 'version' => $version]);
-        StockWorker::waitForLockWait($edit->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($edit->connectionId(), $toConfirmed->connectionId());
+        $toConfirmed->release();
         $a = $toConfirmed->result();
         $b = $edit->result();
 
@@ -338,14 +392,12 @@ describe('ステータス変更・編集が受注の行のロックで順番待�
     test('編集が同時に 2 本: 後の側は先の確定を待ち、updated_at が変わったので競合になる', function () {
         $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Draft, [[$this->p1, 5]]);
         $version = soConcurrencyVersion($order);
-        holdSalesOrderRow($this, $order);
-        $holderId = StockWorker::connectionIdOf($this->holder);
 
-        $first = soWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => soConcurrencyInput($this->customer, [[$this->p1, 6]]), 'version' => $version]);
-        StockWorker::waitForLockWait($first->connectionId(), $holderId);
+        $first = soWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => soConcurrencyInput($this->customer, [[$this->p1, 6]]), 'version' => $version, 'hold' => true]);
+        $first->waitUntilHolding();
         $second = soWorker(['op' => 'update', 'userId' => $this->userId, 'id' => $order->id, 'input' => soConcurrencyInput($this->customer, [[$this->p1, 7]]), 'version' => $version]);
-        StockWorker::waitForLockWait($second->connectionId());
-        $this->holder->rollBack();
+        StockWorker::waitForLockWait($second->connectionId(), $first->connectionId());
+        $first->release();
         $a = $first->result();
         $b = $second->result();
 
