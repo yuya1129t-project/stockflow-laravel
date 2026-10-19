@@ -733,6 +733,7 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 - ログインの試行回数の制限は無効にしていません。数える先はキャッシュ（テストでは `array`。テストごとに作り直す）で、1 つのテストのログインは多くても 3 回なので上限に当たりません
 - アプリをテストと同じプロセスで動かすため、要求の間で認証のガード・セッションの中身が残らないよう、要求ごとにリセットします（`tests/Support/ResetsRequestState.php`）
 - 画面の値の確認は、表示が変わるまで繰り返し確かめる（上限は Pest の既定の 5 秒）方法で行い、固定時間の待ちは使いません。失敗したときのスクリーンショットは `tests/Browser/Screenshots`、`--trace` を付けたときのトレースは `tests/Browser/Traces` に残ります（どちらもコミットしません）
+- 手元で実行すると、Pest が起動した Playwright のサーバー（`playwright run-server`）が実行のたびに 1 つずつコンテナに残ります（pestphp/pest-plugin-browser 5.1.2 で確認。シェル経由で起動したサーバーを止めるときに、シェルだけが終わって node が残るとみられます）。くり返し実行してメモリが足りなくなる（MySQL のコンテナが落ちる）前に、`./vendor/bin/sail exec laravel.test pkill -f "playwright run-server"` で止めます（CI はジョブの終わりに消えます）
 
 ## 開発の進め方
 

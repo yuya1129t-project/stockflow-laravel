@@ -11,7 +11,7 @@ test('admin がユーザーを登録すると一覧に出て、そのユーザ�
     $admin = Browser::user(Role::Admin, 'テスト管理者');
 
     $page = Browser::login($admin);
-    $page->navigate('/users');
+    Browser::open($page, '/users');
     // 名前・メールアドレス・ロール・状態（登録日時は除く）
     Browser::assertRows($page, '[data-test="user-row"]', [
         ['テスト管理者（自分）', 'browser-admin@example.com', '管理者', '有効'],
@@ -28,7 +28,7 @@ test('admin がユーザーを登録すると一覧に出て、そのユーザ�
     $page->assertPathIs("/users/{$created->id}");
     expect($created->role)->toBe(Role::Staff);
 
-    $page->navigate('/users');
+    Browser::open($page, '/users');
     Browser::assertRows($page, '[data-test="user-row"]', [
         ['テスト管理者（自分）', 'browser-admin@example.com', '管理者', '有効'],
         ['新しい担当者', 'new-staff@example.com', '担当者', '有効'],
@@ -43,7 +43,7 @@ test('admin がユーザーを登録すると一覧に出て、そのユーザ�
     Browser::assertText($other, '[data-test="header-role"]', '担当者');
 
     // 操作履歴（新しい順）: 利用者・操作・対象・内容（日時は除く）
-    $page->navigate('/audit-logs');
+    Browser::open($page, '/audit-logs');
     Browser::assertRows($page, '[data-test="audit-row"]', [
         ['新しい担当者', 'ログイン', "ユーザー #{$created->id}", 'ログインしました'],
         ['テスト管理者', '登録', "ユーザー #{$created->id}", 'ユーザー「新しい担当者」（new-staff@example.com）を担当者として登録しました'],
@@ -51,7 +51,7 @@ test('admin がユーザーを登録すると一覧に出て、そのユーザ�
     ], [1, 2, 3, 4]);
 
     // 操作で絞り込める（ログインだけ）
-    $page->navigate('/audit-logs?action=login');
+    Browser::open($page, '/audit-logs?action=login');
     Browser::assertRows($page, '[data-test="audit-row"]', [
         ['新しい担当者', 'ログイン'],
         ['テスト管理者', 'ログイン'],

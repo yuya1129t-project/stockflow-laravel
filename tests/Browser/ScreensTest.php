@@ -76,7 +76,7 @@ test('商品の CSV 出力は、一覧の絞り込みのとおりの商品を、
 
     // viewer も CSV を出力できる（csv.export）。状態「すべて」で絞り込んだ一覧の「CSV 出力」のリンクから取得する
     $page = Browser::login(Browser::user(Role::Viewer));
-    $page->navigate('/products?status=all');
+    Browser::open($page, '/products?status=all');
     $page->assertCount('[data-test="product-row"]', 2);
     $href = $page->script('function () { return document.querySelector(\'[data-test="product-export"]\').getAttribute("href"); }');
     expect($href)->toBeString()->toContain('/products/export')->toContain('status=all');
@@ -124,7 +124,7 @@ test('スマホ幅（375px）で主な画面に横スクロールが出ない', 
         ['/stock', '[data-test="stock-row"]'],
         ["/stock/{$product->id}", '[data-test="stock-movement-row"]'],
     ] as [$path, $ready]) {
-        $page->navigate($path);
+        Browser::open($page, $path);
         $page->assertPresent($ready);
         Browser::assertNoHorizontalScroll($page);
     }

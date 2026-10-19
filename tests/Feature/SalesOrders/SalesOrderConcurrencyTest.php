@@ -169,7 +169,7 @@ describe('出荷の同時実行', function () {
             ->and(DB::table('audit_logs')->where('action', SalesOrderService::STATUS_ACTION)->pluck('target_id')->all())->toBe([(string) $a->id]);
     });
 
-    test('出荷がデッドロックの負け側になっても、再試行（2 回目）で出荷でき、出庫・操作履歴・updated_at の更新は 1 回分だけ', function () {
+    test('出荷がデッドロックの負け側になっても、再試行（2 回目）で出荷でき、出庫・操作履歴は 1 回分だけ残る（受注は出荷済になり updated_at も進む）', function () {
         $order = soConcurrencyOrder($this->customer, SalesOrderStatus::Confirmed, [[$this->p1, 3], [$this->p2, 2]]);
         $payload = soShipPayload($this->userId, $order);
 
@@ -241,7 +241,8 @@ describe('出荷の同時実行', function () {
         $shipB = soWorker(soShipPayload($this->userId, $orderB));
         StockWorker::waitForLockWait($shipB->connectionId(), StockWorker::connectionIdOf($holder));
         $shipA = soWorker(soShipPayload($this->userId, $orderA));
-        StockWorker::waitForLockWait($shipA->connectionId());
+        // A は（id の順に）p1 を取りに行き、B が持つ p1 を待つ
+        StockWorker::waitForLockWait($shipA->connectionId(), $shipB->connectionId());
         $holder->rollBack();
         $rb = $shipB->result();
         $ra = $shipA->result();

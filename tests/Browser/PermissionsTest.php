@@ -51,9 +51,9 @@ test('viewer には編集の操作が出ない（同じ画面を staff で開く
     $staff = Browser::login(Browser::user(Role::Staff));
     $viewer = Browser::login(Browser::user(Role::Viewer));
     foreach ($screens as [$path, $ready, $actions]) {
-        $staff->navigate($path);
+        Browser::open($staff, $path);
         $staff->assertPresent($ready);
-        $viewer->navigate($path);
+        Browser::open($viewer, $path);
         // 画面が表示されてから数える（表示の前に数えると 0 件で素通りする）
         $viewer->assertPresent($ready);
         foreach ($actions as $selector) {
@@ -78,12 +78,12 @@ test('viewer が編集の画面の URL を直接開くと 403 の画面になる
     $staff = Browser::login(Browser::user(Role::Staff));
     $viewer = Browser::login(Browser::user(Role::Viewer));
     foreach ($paths as $path) {
-        $staff->navigate($path);
+        Browser::open($staff, $path);
         $staff->assertPathIs($path);
         $staff->assertDontSee('この画面を表示する権限がありません');
         expect(responseStatus($staff, $path))->toBe(200);
 
-        $viewer->navigate($path);
+        Browser::open($viewer, $path);
         $viewer->assertSee('この画面を表示する権限がありません');
         $viewer->assertPathIs($path);
         expect(responseStatus($viewer, $path))->toBe(403);
@@ -92,7 +92,7 @@ test('viewer が編集の画面の URL を直接開くと 403 の画面になる
     // admin だけの画面（ユーザー管理・操作履歴）は staff・viewer とも 403
     foreach (['/users', '/audit-logs'] as $path) {
         foreach ([$staff, $viewer] as $page) {
-            $page->navigate($path);
+            Browser::open($page, $path);
             $page->assertSee('この画面を表示する権限がありません');
             expect(responseStatus($page, $path))->toBe(403);
         }

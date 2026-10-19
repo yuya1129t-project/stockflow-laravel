@@ -17,7 +17,7 @@ test('ロールごとにログインしてログアウトできる', function (R
 
     $page->click('@header-logout-button');
     $page->assertPathIs('/login');
-    $page->navigate('/dashboard');
+    Browser::open($page, '/dashboard');
     $page->assertPathIs('/login');
 })->with([
     'admin' => [Role::Admin],
@@ -36,7 +36,7 @@ test('パスワードが違うとログインできず、日本語のエラー�
     $page->assertPathIs('/login');
 
     // ログインしていない（ダッシュボードはログイン画面へ戻される）。成功したログインの操作履歴もない
-    $page->navigate('/dashboard');
+    Browser::open($page, '/dashboard');
     $page->assertPathIs('/login');
     expect(AuditLog::query()->where('action', 'login')->exists())->toBeFalse();
 });

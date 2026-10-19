@@ -26,6 +26,9 @@ final class Browser
     /** テスト用ユーザーのパスワード（UserFactory の既定値） */
     public const string PASSWORD = 'password';
 
+    /** ページの移動（読み込みの完了まで）の上限（ミリ秒） */
+    public const int NAVIGATION_TIMEOUT_MS = 15_000;
+
     /** ロールごとのテスト用ユーザー（メールアドレスは "browser-<ロール>@example.com"。デモ用アカウントのアドレスとは別にする） */
     public static function user(Role $role, ?string $name = null): User
     {
@@ -46,6 +49,17 @@ final class Browser
         self::assertText($page, '[data-test="header-role"]', $user->role->label());
 
         return $page;
+    }
+
+    /**
+     * ページを path に移動する（読み込みの完了まで待つ）。
+     * Pest の navigate は、表示を待つ確認と同じく「1 回 1 秒の試行を上限まで繰り返す」形で動くため、読み込みに 1 秒より
+     * かかると同じ URL への移動を重ねて出し「Navigation … is interrupted by another navigation」で落ちる（負荷の高いときに
+     * 実際に起きた）。移動の時間の上限をここで明示して、1 回の試行で読み込みを待ち切る
+     */
+    public static function open(mixed $page, string $path): void
+    {
+        $page->navigate($path, ['timeout' => self::NAVIGATION_TIMEOUT_MS]);
     }
 
     /** @param  array<string, mixed>  $attributes */

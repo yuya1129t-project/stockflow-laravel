@@ -17,14 +17,13 @@ beforeEach(function () {
 /** 受注を画面から作る（下書き）。作った受注の詳細画面を表示した状態で返す */
 function createSalesOrderInBrowser(mixed $page, int $customerId, int $productId, int $quantity): SalesOrder
 {
-    $page->navigate('/sales-orders/create');
+    Browser::open($page, '/sales-orders/create');
     $page->select('customer_id', (string) $customerId)
         ->select('[aria-label="1 行目の商品"]', (string) $productId)
         // 単価には商品の売価が入る
         ->assertValue('[aria-label="1 行目の単価"]', '1200')
         ->fill('[aria-label="1 行目の数量"]', (string) $quantity)
         ->click('@sales-order-submit');
-    $page->assertPathBeginsWith('/sales-orders/');
     Browser::assertText($page, '[data-test="sales-order-status"]', '下書き');
     $order = SalesOrder::query()->sole();
     $page->assertPathIs("/sales-orders/{$order->id}");
@@ -54,7 +53,7 @@ test('受注を作成 → 確定 → 出荷すると、在庫画面の在庫が�
     Browser::assertText($page, '[data-test="sales-order-status"]', '出荷済');
     expect($order->fresh()->status)->toBe(SalesOrderStatus::Shipped);
 
-    $page->navigate("/stock/{$product->id}");
+    Browser::open($page, "/stock/{$product->id}");
     Browser::assertText($page, '[data-test="stock-current"]', '7 個');
     // 新しい順: 出荷の出庫（-3）、初期在庫の入庫（+10）。列は 種別・数量・理由・参照元（日時・記録者は除く）
     Browser::assertRows($page, '[data-test="stock-movement-row"]', [
@@ -63,7 +62,7 @@ test('受注を作成 → 確定 → 出荷すると、在庫画面の在庫が�
     ], [1, 2, 3, 4]);
 
     // 在庫の一覧でも同じ在庫
-    $page->navigate('/stock');
+    Browser::open($page, '/stock');
     Browser::assertRows($page, '[data-test="stock-row"]', [['P-0001', 'テスト商品A', '7']], [0, 1, 5]);
 });
 
@@ -72,10 +71,10 @@ test('発注を作成 → 発注済 → 入荷すると、在庫画面の在庫�
     $product = Browser::product(['code' => 'P-0002', 'name' => 'テスト商品B']);
 
     $page = Browser::login($this->staff);
-    $page->navigate("/stock/{$product->id}");
+    Browser::open($page, "/stock/{$product->id}");
     Browser::assertText($page, '[data-test="stock-current"]', '0 個');
 
-    $page->navigate('/purchase-orders/create');
+    Browser::open($page, '/purchase-orders/create');
     $page->select('supplier_id', (string) $supplier->id)
         ->select('[aria-label="1 行目の商品"]', (string) $product->id)
         // 単価には商品の仕入単価が入る
@@ -92,7 +91,7 @@ test('発注を作成 → 発注済 → 入荷すると、在庫画面の在庫�
     Browser::assertText($page, '[data-test="purchase-order-status"]', '入荷済');
     expect($order->fresh()->status)->toBe(PurchaseOrderStatus::Received);
 
-    $page->navigate("/stock/{$product->id}");
+    Browser::open($page, "/stock/{$product->id}");
     Browser::assertText($page, '[data-test="stock-current"]', '12 個');
     Browser::assertRows($page, '[data-test="stock-movement-row"]', [
         ['入庫', '+12', "発注 {$order->number} の入荷", "発注 {$order->number}"],
@@ -118,11 +117,11 @@ test('在庫が足りないと出荷せず、不足（必要数・現在庫・�
 
     // ダイアログを閉じて開き直しても確定のまま。在庫も変わらない
     $page->click('キャンセル');
-    $page->navigate("/sales-orders/{$order->id}");
+    Browser::open($page, "/sales-orders/{$order->id}");
     Browser::assertText($page, '[data-test="sales-order-status"]', '確定');
     expect($order->fresh()->status)->toBe(SalesOrderStatus::Confirmed)
         ->and($order->fresh()->updated_at?->eq($version))->toBeTrue();
-    $page->navigate("/stock/{$product->id}");
+    Browser::open($page, "/stock/{$product->id}");
     Browser::assertText($page, '[data-test="stock-current"]', '2 個');
     Browser::assertRows($page, '[data-test="stock-movement-row"]', [['入庫', '+2']], [1, 2]);
 });
