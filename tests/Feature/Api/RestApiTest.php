@@ -275,8 +275,10 @@ describe('認証（Bearer トークンのみ。失敗は理由を区別しない
             'headers' => ['Content-Type' => 'application/json'],
             'raw' => '{not json',
         ]), 401);
+        // 上限（65,536 バイト）を超える申告でも 401。PHP の post_max_size（CI は 8M、Sail は 100M）を超える申告は、Laravel の
+        // ValidatePostSize が認証より前に 413 にする（本文は読まない）ので、それより小さい値で確かめる
         restApiProblem('post', '/api/v1/sales-orders', restApi('POST', '/api/v1/sales-orders', [
-            'headers' => ['Content-Type' => 'application/json', 'Content-Length' => '10000000'],
+            'headers' => ['Content-Type' => 'application/json', 'Content-Length' => '70000'],
             'raw' => '{}',
         ]), 401);
         restApiProblem('post', '/api/v1/sales-orders', restApi('POST', '/api/v1/sales-orders', [

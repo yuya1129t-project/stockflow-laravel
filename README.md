@@ -668,6 +668,7 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 ### 本文の大きさの上限と PHP の制約
 
 - アプリでは、`Content-Length` の申告が 65,536 バイトを超えれば本文を読まずに 413、申告がなくても上限 + 1 バイトまでしか読まずに 413 にします（`App\Api\V1\ApiJsonBody`）
+- PHP の `post_max_size` を超える `Content-Length` の申告は、Laravel の `ValidatePostSize`（全体のミドルウェア）が認証より前に 413 にします（本文は読みません。形は同じ problem+json）
 - ただし PHP では、**本文の受信は PHP の SAPI（`artisan serve`・php-fpm）がアプリの処理の前に終えています**（さらに Laravel の `Request::capture` が JSON の本文を先に読み込みます）。Next.js 版のように、受信の途中で打ち切って接続を切ることはアプリではできません。実際に `artisan serve` に 20MB を chunked で送ると、認証なしの 401 でも受信に約 1 秒かかります
 - そのため、**受信そのものの上限は Web サーバーと PHP の設定で掛けます**。#14（AWS でのデモ公開）で、前段の Web サーバー（nginx なら `/api/v1` に `client_max_body_size 64k`）と PHP の `post_max_size`（Sail の既定は 100M）を設定してください
 
