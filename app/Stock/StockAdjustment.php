@@ -7,7 +7,6 @@ use App\Models\AuditLog;
 use App\Models\Product;
 use App\Models\User;
 use App\Products\ProductService;
-use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Validation\ValidationException;
 use PDOException;
 
@@ -21,15 +20,19 @@ use PDOException;
  */
 final class StockAdjustment
 {
-    use DetectsConcurrencyErrors;
-
     /** 操作履歴の action（target_type は商品） */
     public const string ACTION = 'stock_adjust';
+
+    /** ロック待ちのタイムアウト・再試行しきれなかったデッドロックのときのエラー */
+    public const string BUSY_MESSAGE = '混み合っているため、調整できませんでした（記録していません）。しばらくしてからもう一度実行してください';
+
+    /** @param  int<1, max>  $lockWaitTimeout  ロック待ちの上限（秒） */
+    public function __construct(private readonly int $lockWaitTimeout = StockTransaction::LOCK_WAIT_TIMEOUT) {}
 
     /**
      * @return array{recorded: bool, before: int, after: int, delta: int, fellBelowReorderPoint: list<StockChange>}
      *
-     * @throws ValidationException ほかの操作との競合（デッドロックなど）を再試行しきれなかった
+     * @throws ValidationException ロック待ちのタイムアウト・デッドロックを再試行しきれなかった
      */
     public function adjust(User $actor, Product $product, int $actual, string $reason): array
     {
@@ -64,15 +67,13 @@ final class StockAdjustment
                 ]);
 
                 return ['recorded' => true, 'before' => $before, 'after' => $actual, 'delta' => $delta, 'fellBelowReorderPoint' => $result->fellBelowReorderPoint];
-            });
+            }, lockWaitTimeout: $this->lockWaitTimeout);
         } catch (PDOException $e) {
-            // デッドロック・ロック待ちのタイムアウトを再試行しきれなかった（全体はロールバック済み）
-            if (! $this->causedByConcurrencyError($e)) {
+            // ロック待ちのタイムアウト（再試行しない）・デッドロックを再試行しきれなかった（全体はロールバック済み）
+            if (! StockTransaction::isLockWaitTimeout($e) && ! StockTransaction::isDeadlock($e)) {
                 throw $e;
             }
-            throw ValidationException::withMessages([
-                'actual_quantity' => 'ほかの操作と同時に在庫を更新しようとしたため、調整できませんでした（記録していません）。もう一度実行してください',
-            ]);
+            throw ValidationException::withMessages(['actual_quantity' => self::BUSY_MESSAGE]);
         }
     }
 }

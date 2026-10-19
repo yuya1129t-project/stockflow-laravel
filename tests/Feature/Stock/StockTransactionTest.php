@@ -7,16 +7,35 @@ use App\Models\Product;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Stock\InsufficientStockException;
+use App\Stock\StockAdjustment;
 use App\Stock\StockChange;
 use App\Stock\StockEntry;
 use App\Stock\StockQuery;
 use App\Stock\StockTransaction;
+use Illuminate\Database\Events\TransactionBeginning;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Validation\ValidationException;
+use Tests\Support\CommitsTransactions;
+use Tests\Support\StockWorker;
 
 /**
  * 在庫の共通サービス（StockTransaction・StockQuery）。同時実行は StockConcurrencyTest.php で、別々の接続で確かめる。
- * ここではテストのトランザクション（RefreshDatabase）の中で動かす（StockTransaction::run はその内側のトランザクションになる）
+ * StockTransaction::run は最も外側のトランザクションとしてだけ動くので、テストのトランザクション（RefreshDatabase）は張らず、
+ * 実際に確定させてテストの後で全テーブルを空にする（CommitsTransactions）
  */
+uses(CommitsTransactions::class);
+
+afterEach(function () {
+    if (array_key_exists('stock_holder', DB::getConnections())) {
+        if (DB::connection('stock_holder')->transactionLevel() > 0) {
+            DB::connection('stock_holder')->rollBack(0);
+        }
+        DB::purge('stock_holder');
+    }
+});
+
 function stockProduct(int $stock, array $attributes = []): Product
 {
     $product = Product::factory()->create($attributes);
@@ -167,24 +186,96 @@ test('同じトランザクションで別の商品のロックをあとから�
         ->and(currentStock($b))->toBe(10);
 });
 
-test('run の入れ子は例外', function () {
-    expect(fn () => StockTransaction::run(fn () => StockTransaction::run(fn () => null)))
-        ->toThrow(LogicException::class, 'StockTransaction::run を入れ子にしないでください');
+test('run は最も外側のトランザクションとしてだけ呼べる（ほかのトランザクションの中・run の中では例外。何も記録しない）', function () {
+    $a = stockProduct(10);
+    $message = 'StockTransaction::run は最も外側のトランザクションとして呼んでください';
 
-    // 例外の後も次の run は使える
-    expect(StockTransaction::run(fn () => 'ok'))->toBe('ok');
+    expect(fn () => DB::transaction(fn () => StockTransaction::run(
+        fn (StockTransaction $stock) => $stock->record(null, [new StockEntry($a->id, StockMovementType::Out, -1)]),
+    )))->toThrow(LogicException::class, $message)
+        ->and(fn () => StockTransaction::run(fn () => StockTransaction::run(fn () => null)))->toThrow(LogicException::class, $message)
+        ->and(currentStock($a))->toBe(10)
+        ->and(DB::transactionLevel())->toBe(0);
+
+    // 例外の後も次の run は使え、戻った時点で確定している（別の接続から見える）
+    StockTransaction::run(fn (StockTransaction $stock) => $stock->record(null, [new StockEntry($a->id, StockMovementType::Out, -1)]));
+    expect((int) StockWorker::db()->table('stock_movements')->where('product_id', $a->id)->sum('quantity'))->toBe(9);
 });
 
-test('接続の分離レベルは READ COMMITTED。それ以外なら run は例外にする', function () {
-    expect(DB::selectOne('SELECT @@transaction_isolation AS level')->level)->toBe('READ-COMMITTED');
+test('分離レベル: 開始前に次のトランザクションだけを REPEATABLE READ にしても、run のトランザクションは READ COMMITTED で動く', function () {
+    $a = stockProduct(10);
+    // 実行中のトランザクションの分離レベル（performance_schema.events_transactions_current。観測用の接続で読む。
+    // information_schema.innodb_trx は最大 0.1 秒ごとのキャッシュで、直前のトランザクションの行が見えることがあるので使わない）
+    $isolationOfCurrentTransaction = function () use ($a): string {
+        Product::query()->whereKey($a->id)->lockForUpdate()->first();
+        $row = StockWorker::observer()->selectOne(<<<'SQL'
+            SELECT e.ISOLATION_LEVEL AS level
+            FROM performance_schema.events_transactions_current e
+            JOIN performance_schema.threads t ON t.THREAD_ID = e.THREAD_ID
+            WHERE t.PROCESSLIST_ID = ? AND e.STATE = 'ACTIVE'
+            SQL, [DB::selectOne('SELECT CONNECTION_ID() AS id')->id]);
 
-    DB::statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        return $row->level;
+    };
+
+    // 対照: 普通の DB::transaction は、直前の SET TRANSACTION のとおり REPEATABLE READ になる（セッションの値は READ COMMITTED のまま）
+    DB::unprepared('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    expect(DB::selectOne('SELECT @@SESSION.transaction_isolation AS level')->level)->toBe('READ-COMMITTED')
+        ->and(DB::transaction($isolationOfCurrentTransaction))->toBe('REPEATABLE READ');
+
+    DB::unprepared('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    expect(StockTransaction::run(fn () => $isolationOfCurrentTransaction()))->toBe('READ COMMITTED');
+});
+
+test('ロック待ちの上限は run の中だけ短くする（終わったら元に戻す）', function () {
+    $before = DB::selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS t')->t;
+
+    expect((int) StockTransaction::run(fn () => DB::selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS t')->t))->toBe(StockTransaction::LOCK_WAIT_TIMEOUT)
+        ->and(DB::selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS t')->t)->toBe($before);
+});
+
+test('ロック待ちのタイムアウト（1205）は再試行しない（1 回で例外。上限は元に戻す）', function () {
+    $a = stockProduct(10);
+    $before = DB::selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS t')->t;
+    $holder = StockWorker::peer('stock_holder');
+    $holder->beginTransaction();
+    $holder->select('SELECT id FROM products WHERE id = ? FOR UPDATE', [$a->id]);
+    $attempts = 0;
+    Event::listen(TransactionBeginning::class, function () use (&$attempts) {
+        $attempts++;
+    });
+
     try {
-        expect(fn () => StockTransaction::run(fn () => null))
-            ->toThrow(LogicException::class, '在庫を記録するトランザクションの分離レベルが READ COMMITTED ではありません');
-    } finally {
-        DB::statement('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        StockTransaction::run(fn (StockTransaction $stock) => $stock->record(null, [new StockEntry($a->id, StockMovementType::Out, -1)]), lockWaitTimeout: 1);
+        $this->fail('ロック待ちのタイムアウトになりませんでした');
+    } catch (QueryException $e) {
+        expect(StockTransaction::isLockWaitTimeout($e))->toBeTrue();
     }
+
+    expect($attempts)->toBe(1)
+        ->and(DB::selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS t')->t)->toBe($before)
+        ->and(DB::transactionLevel())->toBe(0);
+    $holder->rollBack();
+    expect(currentStock($a))->toBe(10);
+});
+
+test('棚卸調整がロック待ちのタイムアウトになったら、日本語で「混み合っています」を返す（記録しない）', function () {
+    $user = User::factory()->staff()->create();
+    $a = stockProduct(10);
+    $holder = StockWorker::peer('stock_holder');
+    $holder->beginTransaction();
+    $holder->select('SELECT id FROM products WHERE id = ? FOR UPDATE', [$a->id]);
+
+    try {
+        (new StockAdjustment(lockWaitTimeout: 1))->adjust($user, $a, 7, '棚卸');
+        $this->fail('ValidationException が投げられませんでした');
+    } catch (ValidationException $e) {
+        expect($e->errors())->toBe(['actual_quantity' => [StockAdjustment::BUSY_MESSAGE]]);
+    }
+    $holder->rollBack();
+
+    expect(currentStock($a))->toBe(10)
+        ->and(AuditLog::query()->where('action', StockAdjustment::ACTION)->exists())->toBeFalse();
 });
 
 test('記録が空なら何もしない', function () {

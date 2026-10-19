@@ -16,8 +16,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Testing\TestResponse;
 use Inertia\Testing\AssertableInertia as Assert;
+use Tests\Support\CommitsTransactions;
 
 /** 在庫の画面（現在庫一覧・入出庫履歴・棚卸調整。docs/spec.md §2・§4・§5-7） */
+// 棚卸調整は StockTransaction::run（最も外側のトランザクションとしてだけ動く）を使うので、テストのトランザクションは張らない
+uses(CommitsTransactions::class);
+
 function stockPageProduct(int $stock, array $attributes = []): Product
 {
     $product = Product::factory()->create($attributes);

@@ -14,7 +14,8 @@ use Tests\Support\StockWorker;
  * 確かめてから先の側を確定させる（固定時間の待ちは証拠にしない。待ちに入らなければ上限の 10 秒でテストの失敗）。
  *
  * ワーカーはテストのトランザクション（RefreshDatabase）の外で書き込むので、準備・確認・後始末は自動で確定する別の接続
- * （StockWorker::db）で行い、このテストのデータ（商品コード SC-・メール @stock-concurrency.test・受注番号 SO-SC-）は前後で消す
+ * （StockWorker::db）で行い、このテストのデータ（商品コード SC-・メール @stock-concurrency.test・受注番号 SO-SC-）は前後で消す。
+ * ワーカーは DB 名を testing に固定しているので、--parallel（DB 名が testing_test_N になる）には対応しない
  */
 function cleanUpStockConcurrencyData(): void
 {
@@ -241,4 +242,40 @@ test('明細を書く側が先に明細の全商品を id の順に FOR SHARE �
     expect($result['outcome'])->toBe('ok')
         ->and($result['attempts'])->toBe(1)
         ->and([stockConcurrencyStock($p1), stockConcurrencyStock($p2)])->toBe([9, 9]);
+});
+
+test('棚卸調整が入出庫と操作履歴を書いた後でデッドロックしても、再試行の後に入出庫と操作履歴は 1 回分だけ残る', function () {
+    $p = createStockConcurrencyProduct('SC-0001', 10);
+    $lockUserId = StockWorker::db()->table('users')->insertGetId([
+        'name' => 'ロック用', 'email' => 'lock@stock-concurrency.test', 'password' => 'x', 'role' => 'viewer', 'is_active' => true,
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    // 相手: 変更の多いトランザクションにしてから（InnoDB に棚卸調整の側を取り消させる）、users の行を押さえる
+    $peer = StockWorker::peer('stock_peer');
+    $peer->beginTransaction();
+    foreach (range(1, 20) as $i) {
+        $peer->table('audit_logs')->insert(['user_id' => $this->userId, 'action' => 'sc_peer', 'summary' => "相手 {$i}", 'created_at' => now()]);
+    }
+    $peer->select('SELECT id FROM users WHERE id = ? FOR UPDATE', [$lockUserId]);
+    $peerId = StockWorker::connectionIdOf($peer);
+
+    // 1 回目の試行: 商品をロックし、入出庫（adjust）と操作履歴を書いてから、相手の持つ users の行を待つ
+    $adjust = StockWorker::start(['op' => 'adjust', 'userId' => $this->userId, 'productId' => $p, 'actual' => 7, 'reason' => '月末棚卸', 'deadlockAfterAuditLog' => $lockUserId]);
+    StockWorker::waitForLockWait($adjust->connectionId(), $peerId);
+    // 相手が商品を要求すると待ちが一周する（デッドロック）。棚卸調整の側が取り消され、相手は商品のロックを得る
+    $peer->select('SELECT id FROM products WHERE id = ? FOR UPDATE', [$p]);
+    // 2 回目の試行: 商品のロックを待つ
+    StockWorker::waitForLockWait($adjust->connectionId(), $peerId);
+    $peer->rollBack();
+    $result = $adjust->result();
+
+    $db = StockWorker::db();
+    expect($result['outcome'])->toBe('ok')
+        ->and($result['attempts'])->toBe(2)
+        ->and($result['adjust'])->toBe(['recorded' => true, 'before' => 10, 'after' => 7, 'delta' => -3, 'fellBelowReorderPoint' => []])
+        ->and(stockConcurrencyStock($p))->toBe(7)
+        ->and($db->table('stock_movements')->where('product_id', $p)->where('type', 'adjust')->count())->toBe(1)
+        ->and($db->table('audit_logs')->where('action', StockAdjustment::ACTION)->where('target_id', (string) $p)->count())->toBe(1)
+        ->and($db->table('audit_logs')->where('action', 'sc_peer')->count())->toBe(0);
 });

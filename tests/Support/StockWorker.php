@@ -194,7 +194,8 @@ final class StockWorker
         return array_map(fn (object $r) => ['waiting' => (int) $r->waiting, 'blocking' => (int) $r->blocking], $rows);
     }
 
-    private static function observer(): Connection
+    /** performance_schema を読める観測用の接続 */
+    public static function observer(): Connection
     {
         $default = config('database.default');
         assert(is_string($default));
