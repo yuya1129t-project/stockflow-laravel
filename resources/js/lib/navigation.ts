@@ -9,6 +9,7 @@ import {
     Warehouse,
 } from '@lucide/vue';
 import { dashboard } from '@/routes';
+import { index as partnersIndex } from '@/routes/partners';
 import type { NavItem } from '@/types';
 
 /**
@@ -33,10 +34,10 @@ export const mainNavItems: NavItem[] = [
     },
     {
         title: '取引先',
-        href: '/partners',
+        href: partnersIndex(),
         icon: Building2,
         permission: 'view',
-        ready: false,
+        ready: true,
     },
     {
         title: '受注',
