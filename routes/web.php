@@ -1,6 +1,7 @@
 <?php
 
 use App\Auth\Permission;
+use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\PartnerController;
 use App\Http\Controllers\ProductActivationController;
@@ -12,6 +13,8 @@ use App\Http\Controllers\PurchaseOrderExportController;
 use App\Http\Controllers\SalesOrderController;
 use App\Http\Controllers\SalesOrderExportController;
 use App\Http\Controllers\StockController;
+use App\Http\Controllers\UserApiTokenController;
+use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 use Laravel\Fortify\Http\Controllers\AuthenticatedSessionController;
 
@@ -86,6 +89,23 @@ Route::middleware(['auth'])->group(function () {
         Route::get('{product}', 'show')->whereNumber('product')->can(Permission::View)->name('show');
         Route::post('{product}/adjust', 'adjust')->whereNumber('product')->can(Permission::StockAdjust)->name('adjust');
     });
+
+    // ユーザー管理・API トークン（docs/spec.md §5-8・§6-2。admin のみ）。コントローラー・Form Request でも Policy（UserPolicy）で検査する
+    Route::prefix('users')->name('users.')->group(function () {
+        Route::get('/', [UserController::class, 'index'])->can(Permission::UserManage)->name('index');
+        Route::get('create', [UserController::class, 'create'])->can(Permission::UserManage)->name('create');
+        Route::post('/', [UserController::class, 'store'])->can(Permission::UserManage)->name('store');
+        Route::get('{user}', [UserController::class, 'show'])->whereNumber('user')->can(Permission::UserManage)->name('show');
+        Route::put('{user}/role', [UserController::class, 'updateRole'])->whereNumber('user')->can(Permission::UserManage)->name('role');
+        Route::post('{user}/deactivate', [UserController::class, 'deactivate'])->whereNumber('user')->can(Permission::UserManage)->name('deactivate');
+        Route::post('{user}/reactivate', [UserController::class, 'reactivate'])->whereNumber('user')->can(Permission::UserManage)->name('reactivate');
+        Route::put('{user}/password', [UserController::class, 'resetPassword'])->whereNumber('user')->can(Permission::UserManage)->name('password');
+        Route::post('{user}/tokens', [UserApiTokenController::class, 'store'])->whereNumber('user')->can(Permission::UserManage)->name('tokens.store');
+        Route::post('{user}/tokens/{token}/revoke', [UserApiTokenController::class, 'revoke'])->whereNumber(['user', 'token'])->can(Permission::UserManage)->name('tokens.revoke');
+    });
+
+    // 操作履歴（docs/spec.md §5-9。admin のみ）。コントローラーでも Policy（AuditLogPolicy）で検査する
+    Route::get('audit-logs', AuditLogController::class)->can(Permission::AuditView)->name('audit-logs.index');
 });
 
 require __DIR__.'/settings.php';

@@ -11,9 +11,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
+use Laravel\Sanctum\HasApiTokens;
 
 /**
- * メールアドレスの確認・2 要素認証・パスキーは使わない（config/fortify.php）。two_factor_* の列はスターターキットのマイグレーションの名残
+ * メールアドレスの確認・2 要素認証・パスキーは使わない（config/fortify.php）。two_factor_* の列はスターターキットのマイグレーションの名残。
+ * 外部向け REST API のトークン（Sanctum）は tokens()（App\Models\ApiToken）。発行・失効は App\Users\UserService
  *
  * @property int $id
  * @property string $name
@@ -33,6 +35,9 @@ use Illuminate\Support\Carbon;
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable
 {
+    /** @use HasApiTokens<ApiToken> */
+    use HasApiTokens;
+
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
 

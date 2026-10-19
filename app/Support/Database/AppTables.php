@@ -17,6 +17,7 @@ final class AppTables
         'purchase_order_lines',
         'stock_movements',
         'audit_logs',
+        'personal_access_tokens',
         'passkeys',
         'sessions',
         'password_reset_tokens',

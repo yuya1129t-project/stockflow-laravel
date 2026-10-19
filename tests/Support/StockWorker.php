@@ -10,7 +10,7 @@ use Symfony\Component\Process\Process;
 
 /**
  * 在庫の同時実行テストの部品。別プロセスのワーカー（tests/Support/stock-worker.php）の起動・合図と、
- * MySQL の performance_schema でのロック待ちの観測。
+ * MySQL の performance_schema でのロック待ちの観測（行ロックと、ユーザーロック（GET_LOCK））。
  *
  * ロック待ちは「2 つ目がロックを待っている」ことを DB で確かめてから 1 つ目を確定させるために使う（固定時間の待ちを証拠にしない）。
  * performance_schema を読める接続（lock_observer）は、既定で root（Sail の root のパスワードは DB_PASSWORD と同じ。CI は root）。
@@ -181,6 +181,36 @@ final class StockWorker
             $waiting,
             $blockedBy === null ? '' : " 接続 {$blockedBy} の",
             json_encode($waits),
+        ));
+    }
+
+    /**
+     * 接続 waiting が MySQL のユーザーロック（GET_LOCK）の lockName を待っている状態に入るまで待つ
+     * （performance_schema.metadata_locks の PENDING）。上限を過ぎたらテストの失敗
+     */
+    public static function waitForUserLockWait(int $waiting, string $lockName): void
+    {
+        $deadline = microtime(true) + self::WAIT_SECONDS;
+        do {
+            $rows = self::observer()->select(<<<'SQL'
+                SELECT t.PROCESSLIST_ID AS waiting
+                FROM performance_schema.metadata_locks ml
+                JOIN performance_schema.threads t ON t.THREAD_ID = ml.OWNER_THREAD_ID
+                WHERE ml.OBJECT_TYPE = 'USER LEVEL LOCK' AND ml.LOCK_STATUS = 'PENDING' AND ml.OBJECT_NAME = ?
+                SQL, [$lockName]);
+            foreach ($rows as $r) {
+                if ((int) $r->waiting === $waiting) {
+                    return;
+                }
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        throw new AssertionFailedError(sprintf(
+            '接続 %d がユーザーロック %s の待ちに入りませんでした（観測した行ロック待ち: %s）',
+            $waiting,
+            $lockName,
+            json_encode(self::lockWaits()),
         ));
     }
 

@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Auth\Permission;
 use App\Models\User;
 use App\Support\Database\DestructiveOperationGuard;
+use App\Users\ApiTokenAuth;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Support\Facades\Date;
@@ -31,6 +32,8 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->configureDefaults();
         $this->configurePermissions();
+        // 外部向け REST API の Bearer トークン（Sanctum）。Cookie のセッションでは通さない・失効と持ち主の有効を毎回確かめる
+        ApiTokenAuth::register();
     }
 
     /**
