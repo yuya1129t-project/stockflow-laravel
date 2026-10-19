@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Support\Database\DestructiveOperationGuard;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -33,8 +34,10 @@ class AppServiceProvider extends ServiceProvider
     {
         Date::use(CarbonImmutable::class);
 
+        // migrate:fresh・db:wipe など DB を消すコマンドは、本番と、シードと同じ判定で危ない接続先では実行しない
+        // （ローカル以外の DB・テスト用 DB の取り違え。DestructiveOperationGuard）
         DB::prohibitDestructiveCommands(
-            app()->isProduction(),
+            app()->isProduction() || ! DestructiveOperationGuard::checkDefaultConnection()->ok,
         );
 
         Password::defaults(fn (): ?Password => app()->isProduction()
