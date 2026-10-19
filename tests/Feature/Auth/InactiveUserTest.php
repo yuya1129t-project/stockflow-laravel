@@ -42,7 +42,7 @@ test('ログイン中に無効化されたら、次のリクエストでログ�
     $response->assertSessionHas('status', EnsureUserIsActive::MESSAGE);
     $this->assertGuest();
 
-    // 有効に戻しても、前のセッションには戻れない（ログアウト時にセッションを作り直している）
+    // 有効に戻しても、ログイン済みには戻らない（ログアウトしている）
     $user->forceFill(['is_active' => true])->save();
     $this->app['auth']->forgetGuards();
     $this->get(route('dashboard'))->assertRedirect(route('login'));

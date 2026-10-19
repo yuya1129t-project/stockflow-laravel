@@ -4,6 +4,10 @@ use App\Models\AuditLog;
 use App\Models\User;
 use App\Providers\FortifyServiceProvider;
 use Database\Seeders\Demo\DemoData;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 
 test('ログイン画面にデモ用アカウント（シードの値）が表示される', function () {
@@ -202,7 +206,98 @@ describe('ログインの試行回数制限', function () {
 
         $this->postJson(route('login.store'), ['email' => $user->email, 'password' => 'password'])
             ->assertTooManyRequests()
+            ->assertHeader('Retry-After')
+            ->assertJsonPath('message', fn (string $message) => str_starts_with($message, 'ログインの試行回数が多すぎます'))
             ->assertJsonPath('errors.email.0', fn (string $message) => str_starts_with($message, 'ログインの試行回数が多すぎます'));
         $this->assertGuest();
+    });
+
+    test('ゼロ幅スペースなどを混ぜた変形したメールアドレスでは、制限を回避してログインできない', function () {
+        $user = User::factory()->create(['email' => 'staff@example.com']);
+
+        foreach (range(1, 5) as $_) {
+            $this->post(route('login.store'), ['email' => $user->email, 'password' => 'wrong-password']);
+        }
+        $this->post(route('login.store'), ['email' => $user->email, 'password' => 'password'])
+            ->assertInvalid(['email' => 'ログインの試行回数が多すぎます']);
+
+        // レビューの再現例: U+200B（ゼロ幅スペース）を混ぜると制限のキーは別になるが、照合しないので正しいパスワードでもログインできない
+        foreach (["staff@exa\u{200B}mple.com", "staff@exa\u{200B}\u{200B}mple.com", "sta\u{200D}ff@example.com"] as $variant) {
+            $this->post(route('login.store'), ['email' => $variant, 'password' => 'password'])
+                ->assertInvalid(['email' => 'メールアドレスまたはパスワードが正しくありません']);
+            $this->assertGuest();
+        }
+    });
+});
+
+test('ASCII 以外の文字を含むメールアドレスは、正しいパスワードでもログインできない（制限に掛かる前でも）', function () {
+    User::factory()->create(['email' => 'staff@example.com']);
+
+    $this->post(route('login.store'), ['email' => "staff@exa\u{200B}mple.com", 'password' => 'password'])
+        ->assertInvalid(['email' => 'メールアドレスまたはパスワードが正しくありません']);
+
+    $this->assertGuest();
+});
+
+test('ログインに成功したら、ハッシュの設定が変わっていればパスワードのハッシュを作り直す', function () {
+    $user = User::factory()->create();
+    // 低いコスト（4）のハッシュを直接入れる（モデルの hashed のキャストを通さない）
+    DB::table('users')->where('id', $user->id)->update(['password' => Hash::make('password', ['rounds' => 4])]);
+
+    config(['hashing.bcrypt.rounds' => 5]);
+    Hash::forgetDrivers();
+
+    $this->post(route('login.store'), ['email' => $user->email, 'password' => 'password']);
+
+    $this->assertAuthenticatedAs($user);
+    $hash = (string) DB::table('users')->where('id', $user->id)->value('password');
+    expect(Hash::info($hash)['options']['cost'])->toBe(5)
+        ->and(Hash::check('password', $hash))->toBeTrue();
+});
+
+describe('ログインしたままにする（Remember Me）', function () {
+    /** セッションがなく、Remember Me の Cookie だけがあるリクエストにする */
+    function withOnlyRememberCookie($test, User $user)
+    {
+        $token = Str::random(60);
+        $user->forceFill(['remember_token' => $token])->save();
+        app('auth')->forgetGuards();
+        $test->flushSession();
+
+        return $test->withCookie(
+            Auth::guard('web')->getRecallerName(),
+            $user->id.'|'.$token.'|'.$user->getAuthPassword(),
+        );
+    }
+
+    test('Cookie だけで再認証でき、操作履歴に 1 件記録する', function () {
+        $user = User::factory()->create();
+
+        withOnlyRememberCookie($this, $user)->get(route('dashboard'))->assertOk();
+
+        $this->assertAuthenticatedAs($user);
+        expect(AuditLog::count())->toBe(1);
+        expect(AuditLog::sole())
+            ->user_id->toBe($user->id)
+            ->action->toBe('login');
+    });
+
+    test('ログイン画面でチェックを入れてログインしても、記録は 1 件だけ', function () {
+        $user = User::factory()->create();
+
+        $this->post(route('login.store'), ['email' => $user->email, 'password' => 'password', 'remember' => 'on']);
+        $this->get(route('dashboard'))->assertOk();
+
+        $this->assertAuthenticatedAs($user);
+        expect(AuditLog::count())->toBe(1);
+    });
+
+    test('無効ユーザーは Cookie で再認証されてもすぐにログアウトし、記録しない', function () {
+        $user = User::factory()->inactive()->create();
+
+        withOnlyRememberCookie($this, $user)->get(route('dashboard'))->assertRedirect(route('login'));
+
+        $this->assertGuest();
+        expect(AuditLog::count())->toBe(0);
     });
 });

@@ -2,7 +2,6 @@
 
 namespace App\Providers;
 
-use App\Actions\Fortify\RecordLogin;
 use App\Models\User;
 use Database\Seeders\Demo\DemoData;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -13,14 +12,15 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
-use Laravel\Fortify\Actions\AttemptToAuthenticate;
-use Laravel\Fortify\Actions\CanonicalizeUsername;
-use Laravel\Fortify\Actions\PrepareAuthenticatedSession;
 use Laravel\Fortify\Fortify;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * 認証（Fortify）の設定。使う機能はログイン・ログアウトだけ（config/fortify.php の features は空）。
- * ユーザーの登録・変更は admin のユーザー管理（docs/spec.md §5）で行う
+ * Fortify のルートは登録させず、ログイン・ログアウトだけを routes/web.php で定義する
+ * （features に関係なく登録されるパスワードの再確認のルートも使わないため）。
+ * ユーザーの登録・変更は admin のユーザー管理（docs/spec.md §5）で行う。
+ * 成功したログインの操作履歴は App\Listeners\RecordLogin（Login イベント）で記録する
  */
 class FortifyServiceProvider extends ServiceProvider
 {
@@ -38,7 +38,7 @@ class FortifyServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        Fortify::ignoreRoutes();
     }
 
     /**
@@ -52,13 +52,31 @@ class FortifyServiceProvider extends ServiceProvider
     }
 
     /**
-     * ログインの手順。パスワードを確かめたあとで無効ユーザーを拒否し、成功したログインを操作履歴に記録する
+     * ログインの入力のメールアドレス（試行回数の制限のキーと照合の両方で使う値）。小文字にそろえる
+     * （Fortify の CanonicalizeUsername と同じ）
+     */
+    public static function loginEmail(Request $request): string
+    {
+        return Str::lower($request->string(Fortify::username())->value());
+    }
+
+    /**
+     * ログインの手順。パスワードを確かめたあとで無効ユーザーを拒否する
      */
     private function configureAuthentication(): void
     {
         Fortify::authenticateUsing(function (Request $request): ?User {
+            $email = self::loginEmail($request);
+
+            // ASCII の表示できる文字以外を含むメールアドレスは照合しない（通常の失敗にする）。users.email の照合順序
+            // （utf8mb4_unicode_ci）はゼロ幅スペースなどを無視するため、そのまま照合すると、試行回数の制限のキーだけが
+            // 別になる変形したアドレス（例: staff@exa\u{200B}mple.com）で同じユーザーにログインできてしまう
+            if (preg_match('/\A[\x21-\x7E]+\z/', $email) !== 1) {
+                return null;
+            }
+
             $guard = Auth::guard('web');
-            $credentials = $request->only(Fortify::username(), 'password');
+            $credentials = [Fortify::username() => $email, 'password' => $request->string('password')->value()];
 
             // validate() は照合だけを行う（ログインは Fortify が行う）。ユーザーの有無で応答時間が変わらないよう、
             // SessionGuard は照合を一定時間（Timebox）で行う
@@ -76,16 +94,13 @@ class FortifyServiceProvider extends ServiceProvider
                 throw ValidationException::withMessages([Fortify::username() => self::INACTIVE_MESSAGE]);
             }
 
+            // 標準のログイン（SessionGuard::attempt）と同じく、ハッシュの設定（コストなど）が変わっていたら作り直す
+            if (config('hashing.rehash_on_login', true)) {
+                $guard->getProvider()->rehashPasswordIfRequired($user, $credentials);
+            }
+
             return $user;
         });
-
-        // Fortify の既定の手順（試行回数の制限はルートの throttle で行う。2 要素認証は使わない）に、操作履歴の記録を足す
-        Fortify::authenticateThrough(fn (): array => [
-            CanonicalizeUsername::class,
-            AttemptToAuthenticate::class,
-            PrepareAuthenticatedSession::class,
-            RecordLogin::class,
-        ]);
     }
 
     /**
@@ -103,8 +118,6 @@ class FortifyServiceProvider extends ServiceProvider
             ], DemoData::USERS),
             'demoPassword' => DemoData::PASSWORD,
         ]));
-
-        Fortify::confirmPasswordView(fn () => Inertia::render('auth/ConfirmPassword'));
     }
 
     /**
@@ -114,13 +127,16 @@ class FortifyServiceProvider extends ServiceProvider
     private function configureRateLimiting(): void
     {
         RateLimiter::for('login', function (Request $request) {
-            $email = Str::transliterate(Str::lower($request->string(Fortify::username())->value()));
-            $tooManyAttempts = function (Request $request, array $headers): never {
-                $seconds = $headers['Retry-After'] ?? 60;
+            $email = self::loginEmail($request);
+            $tooManyAttempts = function (Request $request, array $headers): Response {
+                $message = __('auth.throttle', ['seconds' => $headers['Retry-After'] ?? 60]);
 
-                throw ValidationException::withMessages([
-                    Fortify::username() => __('auth.throttle', ['seconds' => $seconds]),
-                ])->status(429);
+                // JSON の要求には、待つ秒数を Retry-After などのヘッダーでも返す
+                if ($request->expectsJson()) {
+                    return response()->json(['message' => $message, 'errors' => [Fortify::username() => [$message]]], 429, $headers);
+                }
+
+                throw ValidationException::withMessages([Fortify::username() => $message]);
             };
 
             return [

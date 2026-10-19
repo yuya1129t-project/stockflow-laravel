@@ -6,8 +6,8 @@ use Illuminate\Support\Facades\Route;
 
 /**
  * 公開デモでデモアカウントを壊されないよう、スターターキットの機能のうち spec にないものは止めている
- * （config/fortify.php の features は空、routes/settings.php は外観だけ）。ここで止めたことを固定する
- * （Fortify の機能を戻すと、該当のルートができてテストが落ちる）
+ * （config/fortify.php の features は空、Fortify のルートは登録させずログイン・ログアウトだけを routes/web.php に定義、
+ * routes/settings.php は外観だけ）。ここで止めたことを固定する（Fortify の機能やルートを戻すと、該当のルートができてテストが落ちる）
  */
 test('公開のユーザー登録はできない（GET・POST /register は 404 で、ユーザーは作られない）', function () {
     $this->get('/register')->assertNotFound();
@@ -55,6 +55,9 @@ dataset('止めた機能のルート', [
     'パスキーでのログイン' => ['POST', '/passkeys/login'],
     'パスキーのログインオプション' => ['GET', '/passkeys/login/options'],
     'パスキーの案内' => ['GET', '/.well-known/passkey-endpoints'],
+    'パスワードの再確認の画面' => ['GET', '/user/confirm-password'],
+    'パスワードの再確認' => ['POST', '/user/confirm-password'],
+    'パスワードの再確認の状態' => ['GET', '/user/confirmed-password-status'],
 ]);
 
 test('未ログインでは 404', function (string $method, string $uri) {

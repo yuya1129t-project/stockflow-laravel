@@ -134,3 +134,37 @@ test('画面にはロールと、そのロールに許可された操作だけ�
             ->where('auth.permissions', ['view', 'master.edit', 'order.edit', 'stock.adjust', 'csv.export', 'csv.import']),
         );
 });
+
+/**
+ * ログインが必要なルートには、ルートでの権限の検査（can:）を付ける。付けないルートはここに理由とともに挙げる
+ * （コントローラーの Gate::authorize だけで検査するルートも、ここに挙げる）。画面を足したときの付け忘れを防ぐ
+ */
+test('ログインが必要なルートには can: が付いているか、明示の許可リストにある', function () {
+    // URI → 理由
+    $allowedWithoutCan = [
+        'logout' => 'ログアウトは誰でもできる',
+        'settings' => '外観の設定へのリダイレクト',
+        'settings/appearance' => '外観の設定（自分の画面の表示だけ。データは変えない）',
+    ];
+
+    $checked = [];
+    foreach (Route::getRoutes() as $route) {
+        $middleware = $route->gatherMiddleware();
+        $requiresLogin = collect($middleware)->contains(fn ($m) => is_string($m) && ($m === 'auth' || str_starts_with($m, 'auth:')));
+        if (! $requiresLogin || str_starts_with($route->uri(), '_test/')) {
+            continue;
+        }
+
+        foreach (array_diff($route->methods(), ['HEAD']) as $method) {
+            $key = "{$method} {$route->uri()}";
+            $hasCan = collect($middleware)->contains(fn ($m) => is_string($m) && str_starts_with($m, 'can:'));
+            expect($hasCan || array_key_exists($route->uri(), $allowedWithoutCan))
+                ->toBeTrue("{$key} に ->can(Permission::...) が付いていません（付けないなら許可リストに理由を書く）");
+            $checked[] = $route->uri();
+        }
+    }
+
+    expect($checked)->toContain('dashboard', 'logout');
+    // 許可リストに、もう無いルートが残っていない
+    expect(array_diff(array_keys($allowedWithoutCan), $checked))->toBe([]);
+});
