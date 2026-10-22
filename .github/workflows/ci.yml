@@ -67,6 +67,10 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
+      # 本番の依存の既知の脆弱性（setup-php が COMPOSER_NO_AUDIT=1 にするため、install では検査されない）
+      - name: Audit production dependencies
+        run: composer audit --locked --no-dev
+
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -99,6 +103,97 @@ jobs:
         run: npm run types:check
 
       - name: Tests (Pest, MySQL)
+        run: php artisan test
+
+  # 公開先（さくらのレンタルサーバ）と同じ PHP 8.3＋MySQL 8.0 で、単体・機能テスト（同時実行のテストを含む）を通す。
+  # 整形・静的解析・フロントの検査は版に依らないので上のジョブだけで行う（PHPStan は phpVersion 8.3 で解析する）
+  php83-mysql80:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # テスト用の MySQL（CI 専用のダミー値）
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: testing
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ppassword"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: testing
+      DB_USERNAME: root
+      DB_PASSWORD: password
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      # 版が PHP 8.3・MySQL 8.0 でなければ落とす（設定の誤りで 8.4 に戻っても気づけるように）
+      - name: Check versions
+        run: |
+          php -v
+          php -r 'exit(PHP_VERSION_ID >= 80300 && PHP_VERSION_ID < 80400 ? 0 : 1);'
+          mysql_version="$(mysql -h 127.0.0.1 -uroot -ppassword -N -B -e 'SELECT VERSION()')"
+          echo "MySQL ${mysql_version}"
+          [[ "$mysql_version" == 8.0.* ]]
+
+      # PHP 8.4 専用の書き方（プロパティフック・非対称な可視性など）が残っていないこと
+      - name: Syntax check on PHP 8.3
+        run: find app bootstrap config database lang routes tests -name '*.php' -not -path 'bootstrap/cache/*' -print0 | xargs -0 -n 1 -P 4 php -l -n > /dev/null
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # APP_KEY は CI のたびに生成する（コミットしない）
+      - name: Prepare application
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      # Wayfinder（vite のプラグイン）が php artisan でルートの型を生成するため、PHP の準備のあとに行う
+      - name: Build frontend
+        run: npm run build
+
+      - name: Tests (Pest, PHP 8.3, MySQL 8.0)
         run: php artisan test
 
   # ブラウザテスト（Pest のブラウザテスト・Playwright の Chromium）。アプリは Pest がテストのプロセスの中で起動する
@@ -180,18 +275,18 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      # 失敗したテストのトレース（--trace。成功したテストの分は残さない）とスクリーンショットを保存する
+      # 失敗したテストのスクリーンショットとログを保存する（Playwright のトレース（--trace）は pest-plugin-browser 5 から。
+      # PHP 8.3 で入る 4.x にはないため使わない）
       - name: Browser tests (Pest, Playwright)
-        run: php artisan test --testsuite=Browser --trace
+        run: php artisan test --testsuite=Browser
 
-      - name: Upload screenshots and traces
+      - name: Upload screenshots and logs
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: browser-test-artifacts
           path: |
             tests/Browser/Screenshots/
-            tests/Browser/Traces/
             storage/logs/
           if-no-files-found: ignore
           retention-days: 14

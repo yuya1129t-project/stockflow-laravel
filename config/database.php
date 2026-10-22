@@ -1,7 +1,6 @@
 <?php
 
 use Illuminate\Support\Str;
-use Pdo\Mysql;
 
 return [
 
@@ -67,8 +66,9 @@ return [
             // 普通の SELECT をしていると、ロックの後の合計が古いスナップショットになり、先に確定した出庫を見落として在庫が負になりうる
             // （App\Stock\StockTransaction は READ COMMITTED でなければ例外にする）
             'isolation_level' => 'READ COMMITTED',
+            // Pdo\Mysql::ATTR_SSL_CA は PHP 8.4 から。公開先（PHP 8.3）でも動くよう PDO::MYSQL_ATTR_SSL_CA を使う（8.5 で非推奨）
             'options' => extension_loaded('pdo_mysql') ? array_filter([
-                Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+                PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],
         ],
 
@@ -87,8 +87,9 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
+            // Pdo\Mysql::ATTR_SSL_CA は PHP 8.4 から。公開先（PHP 8.3）でも動くよう PDO::MYSQL_ATTR_SSL_CA を使う（8.5 で非推奨）
             'options' => extension_loaded('pdo_mysql') ? array_filter([
-                Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+                PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],
         ],
 

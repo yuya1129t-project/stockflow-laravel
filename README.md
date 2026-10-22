@@ -33,10 +33,10 @@
 
 | 区分           | 採用技術                                                                          |
 | -------------- | --------------------------------------------------------------------------------- |
-| フレームワーク | Laravel 13（PHP 8.4）                                                             |
+| フレームワーク | Laravel 13（PHP 8.3 以上。開発は PHP 8.4）                                        |
 | 画面           | Laravel 公式 Vue スターターキット（Inertia 3＋Vue 3＋TypeScript＋Tailwind CSS 4） |
 | 認証           | Laravel Fortify（スターターキット同梱）                                           |
-| データベース   | MySQL 8.4                                                                         |
+| データベース   | MySQL 8.4（公開先の MySQL 8.0 でも CI でテスト）                                  |
 | テスト         | Pest（ブラウザテストは Pest のブラウザテスト＋Playwright の Chromium）            |
 | 静的解析・整形 | Larastan（PHPStan level 7）／Pint／Vite+（フロントの lint・整形）／vue-tsc        |
 | CI             | GitHub Actions（MySQL サービスに対してテスト）                                    |
@@ -715,7 +715,7 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 - 件数（2026-10-19 時点）: 単体テスト 303 件・機能テスト 1,007 件（`sail test`）、ブラウザテスト 13 件（`sail test --testsuite=Browser`）
 - テストの並列実行（`--parallel`）には対応していません（テスト用 DB の名前を `testing` に固定して判定しているため）
 - テスト用のデータベース `testing` は、Sail の MySQL コンテナの初回起動時（ボリュームを作るとき）に自動で作られます。作られていない場合は `./vendor/bin/sail down -v` でボリュームを消してから起動し直します（開発用のデータも消えます）
-- CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します。ブラウザテストは別のジョブで実行し、失敗したときはスクリーンショット・トレース・ログを成果物として 14 日保存します
+- CI（GitHub Actions）では、MySQL 8.4 のサービスを立てて、上と同じチェックとビルドを push（main）と pull request ごとに実行します。公開先と同じ PHP 8.3＋MySQL 8.0 でも、単体・機能テスト（同時実行のテストを含む）を別のジョブで実行します。ブラウザテストは別のジョブで実行し、失敗したときはスクリーンショット・ログを成果物として 14 日保存します
 - テストの方針（機能テスト・同時実行テスト・契約テスト・ブラウザテスト・変異で確かめたこと）は [docs/design-notes.md](docs/design-notes.md) の「テストの方針」にあります
 
 ### ブラウザテスト（`tests/Browser`）
@@ -732,8 +732,24 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 - 確かめていること: 3 ロールのログイン・ログアウト（ログアウトの後はダッシュボードを開けない）、パスワード誤りの日本語のエラー、staff の受注作成 → 確定 → 出荷で在庫画面の在庫が減る（入出庫履歴の出庫・参照元まで）、発注 → 発注済 → 入荷で在庫が増える、出荷時の在庫不足の表（必要数・現在庫・不足数）とステータス・在庫が変わらないこと、viewer に編集の操作が出ない（同じ画面を staff で開くと出ることと並べて）、viewer が編集の URL を直接開くと 403（staff は開ける。HTTP のステータスも確かめる）、admin のユーザー登録（登録したユーザーでログインできる）と操作履歴（新しい順・操作での絞り込み）、商品の CSV 出力の中身（BOM・見出し・各列の値・絞り込みの反映）、ダッシュボードの値（今月の受注額と前月比・未出荷・納期切れ・発注点割れ・入荷待ち）、スマホ幅（375px）で主な画面に横スクロールが出ない
 - ログインの試行回数の制限は無効にしていません。数える先はキャッシュ（テストでは `array`。テストごとに作り直す）で、1 つのテストのログインは多くても 3 回なので上限に当たりません
 - アプリをテストと同じプロセスで動かすため、要求の間で認証のガード・セッションの中身が残らないよう、要求ごとにリセットします（`tests/Support/ResetsRequestState.php`）
-- 画面の値の確認は、表示が変わるまで繰り返し確かめる（上限は Pest の既定の 5 秒）方法で行い、固定時間の待ちは使いません。失敗したときのスクリーンショットは `tests/Browser/Screenshots`、`--trace` を付けたときのトレースは `tests/Browser/Traces` に残ります（どちらもコミットしません）
-- 手元で実行すると、Pest が起動した Playwright のサーバー（`playwright run-server`）が実行のたびに 1 つずつコンテナに残ります（pestphp/pest-plugin-browser 5.1.2 で確認。シェル経由で起動したサーバーを止めるときに、シェルだけが終わって node が残るとみられます）。くり返し実行してメモリが足りなくなる（MySQL のコンテナが落ちる）前に、`./vendor/bin/sail exec laravel.test pkill -f "playwright run-server"` で止めます（CI はジョブの終わりに消えます）
+- 画面の値の確認は、表示が変わるまで繰り返し確かめる（上限は Pest の既定の 5 秒）方法で行い、固定時間の待ちは使いません。失敗したときのスクリーンショットは `tests/Browser/Screenshots` に残ります（コミットしません）。Playwright のトレース（`--trace`）は pestphp/pest-plugin-browser 5 からの機能で、PHP 8.3 で入る 4.x では使えません
+- 手元で実行すると、Pest が起動した Playwright のサーバー（`playwright run-server`）が実行のたびに 1 つずつコンテナに残ります（pestphp/pest-plugin-browser 5.1.2・4.3.1 で確認。シェル経由で起動したサーバーを止めるときに、シェルだけが終わって node が残るとみられます）。くり返し実行してメモリが足りなくなる（MySQL のコンテナが落ちる）前に、`./vendor/bin/sail exec laravel.test pkill -f "playwright run-server"` で止めます（CI はジョブの終わりに消えます）
+
+## 公開（さくらのレンタルサーバ）
+
+- 公開先は PHP 8.3・MySQL 8.0 で、サーバーに composer がありません。そのため、本番用の依存（`vendor`）と画面（`public/build`）を手元で作ってから送ります。詳しい手順（サーバーの設定・送り方・`.env`・マイグレーション・cron）は Issue #14 で用意します
+- PHP の依存は `composer.json` の `config.platform.php`（8.3.36）で解いたロックのとおりに入れます。開発の依存も PHP 8.3 で入る版にしています（Pest 4・PHPUnit 12）
+- `config.platform.php` は、開発機（PHP 8.4）で `composer update` しても公開先の PHP 8.3 で入る版に解くための固定です。公開先が PHP 8.4 以上になったら、この固定を外して（または上げて）Pest 5 に戻せます
+
+```bash
+./vendor/bin/sail up -d          # 画面のビルドに Sail の Node.js を使う
+scripts/build-release.sh         # コミット済みの HEAD から作る（git の参照を渡すとその版から作る）
+# → build/release/stockflow-laravel-<短いハッシュ>.tar.gz
+```
+
+- 中身: `composer install --no-dev --optimize-autoloader`（版を固定した公式の composer のイメージ。拡張の確認と `package:discover` は公開先と同じ PHP 8.3.36 のイメージ）と `npm ci && npm run build`（Sail）の結果。`tests`・`node_modules`・画面のソース（`resources/js`・`resources/css`）・開発用の設定ファイルは除き、`docs` は `docs/openapi.json` だけ残します（`/api/v1/openapi.json`・`/api-docs` が実行時に読むため）
+- `.env` は入れません（サーバーの `.env` を上書きしないため）
+- 最後に PHP 8.3.36 で、vendor に開発の依存がないこと・本番の設定で `artisan route:list` が動くこと・配布物に `.env` がないことを確かめます。失敗・中断したときは作業ディレクトリと作りかけのアーカイブを消します
 
 ## 開発の進め方
 

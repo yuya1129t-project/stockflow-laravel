@@ -1,7 +1,7 @@
-# StockFlow (Laravel) — CLAUDE.md（v1.0 / 最終更新: 2026-10-19）
+# StockFlow (Laravel) — CLAUDE.md（v1.1 / 最終更新: 2026-10-22）
 
 ## このプロジェクトについて
-- 受発注・在庫管理の社内業務システム（デモ）。Laravel 13／Inertia＋Vue 3／MySQL 8.4。データはすべて架空。Next.js 版（stockflow-next）と同じ業務仕様・同じ REST API 仕様
+- 受発注・在庫管理の社内業務システム（デモ）。Laravel 13／Inertia＋Vue 3／MySQL。開発は PHP 8.4・MySQL 8.4、公開先（さくら）は PHP 8.3・MySQL 8.0。データはすべて架空。Next.js 版（stockflow-next）と同じ業務仕様・同じ REST API 仕様
 
 ## セッション開始時に読むファイル
 1. docs/spec.md — 業務仕様（ロール権限・データ・ステータス遷移・API）
