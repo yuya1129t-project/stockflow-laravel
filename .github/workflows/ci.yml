@@ -267,18 +267,18 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      # 失敗したテストのトレース（--trace。成功したテストの分は残さない）とスクリーンショットを保存する
+      # 失敗したテストのスクリーンショットとログを保存する（Playwright のトレース（--trace）は pest-plugin-browser 5 から。
+      # PHP 8.3 で入る 4.x にはないため使わない）
       - name: Browser tests (Pest, Playwright)
-        run: php artisan test --testsuite=Browser --trace
+        run: php artisan test --testsuite=Browser
 
-      - name: Upload screenshots and traces
+      - name: Upload screenshots and logs
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: browser-test-artifacts
           path: |
             tests/Browser/Screenshots/
-            tests/Browser/Traces/
             storage/logs/
           if-no-files-found: ignore
           retention-days: 14
