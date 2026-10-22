@@ -67,6 +67,10 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
+      # 本番の依存の既知の脆弱性（setup-php が COMPOSER_NO_AUDIT=1 にするため、install では検査されない）
+      - name: Audit production dependencies
+        run: composer audit --locked --no-dev
+
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -157,10 +161,14 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
-      - name: Show versions
+      # 版が PHP 8.3・MySQL 8.0 でなければ落とす（設定の誤りで 8.4 に戻っても気づけるように）
+      - name: Check versions
         run: |
           php -v
-          mysql -h 127.0.0.1 -uroot -ppassword -e 'SELECT VERSION()'
+          php -r 'exit(PHP_VERSION_ID >= 80300 && PHP_VERSION_ID < 80400 ? 0 : 1);'
+          mysql_version="$(mysql -h 127.0.0.1 -uroot -ppassword -N -B -e 'SELECT VERSION()')"
+          echo "MySQL ${mysql_version}"
+          [[ "$mysql_version" == 8.0.* ]]
 
       # PHP 8.4 専用の書き方（プロパティフック・非対称な可視性など）が残っていないこと
       - name: Syntax check on PHP 8.3

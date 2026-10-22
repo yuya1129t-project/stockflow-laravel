@@ -739,6 +739,7 @@ curl -s -i -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'
 
 - 公開先は PHP 8.3・MySQL 8.0 で、サーバーに composer がありません。そのため、本番用の依存（`vendor`）と画面（`public/build`）を手元で作ってから送ります。詳しい手順（サーバーの設定・送り方・`.env`・マイグレーション・cron）は Issue #14 で用意します
 - PHP の依存は `composer.json` の `config.platform.php`（8.3.36）で解いたロックのとおりに入れます。開発の依存も PHP 8.3 で入る版にしています（Pest 4・PHPUnit 12）
+- `config.platform.php` は、開発機（PHP 8.4）で `composer update` しても公開先の PHP 8.3 で入る版に解くための固定です。公開先が PHP 8.4 以上になったら、この固定を外して（または上げて）Pest 5 に戻せます
 
 ```bash
 ./vendor/bin/sail up -d          # 画面のビルドに Sail の Node.js を使う
@@ -746,8 +747,9 @@ scripts/build-release.sh         # コミット済みの HEAD から作る（git
 # → build/release/stockflow-laravel-<短いハッシュ>.tar.gz
 ```
 
-- 中身: `composer install --no-dev --optimize-autoloader`（PHP 8.3 のコンテナ）と `npm ci && npm run build`（Sail）の結果。`tests`・`node_modules`・画面のソース（`resources/js`・`resources/css`）・開発用の設定ファイルは除き、`docs` は `docs/openapi.json` だけ残します（`/api/v1/openapi.json`・`/api-docs` が実行時に読むため）
+- 中身: `composer install --no-dev --optimize-autoloader`（版を固定した公式の composer のイメージ。拡張の確認と `package:discover` は公開先と同じ PHP 8.3.36 のイメージ）と `npm ci && npm run build`（Sail）の結果。`tests`・`node_modules`・画面のソース（`resources/js`・`resources/css`）・開発用の設定ファイルは除き、`docs` は `docs/openapi.json` だけ残します（`/api/v1/openapi.json`・`/api-docs` が実行時に読むため）
 - `.env` は入れません（サーバーの `.env` を上書きしないため）
+- 最後に PHP 8.3.36 で、vendor に開発の依存がないこと・本番の設定で `artisan route:list` が動くこと・配布物に `.env` がないことを確かめます。失敗・中断したときは作業ディレクトリと作りかけのアーカイブを消します
 
 ## 開発の進め方
 
