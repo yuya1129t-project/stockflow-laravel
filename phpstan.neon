@@ -11,3 +11,6 @@ parameters:
         - routes/
 
     level: 7
+
+    # 公開先（さくらのレンタルサーバ）の PHP 8.3 で動く書き方か検査する（開発は PHP 8.4）
+    phpVersion: 80300
