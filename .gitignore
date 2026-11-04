@@ -31,7 +31,7 @@ build/
 # 環境変数の例はコミットする
 !.env.example
 
-# Laravel スターターキット（Vue）の既定から追記（/CLAUDE.md・/.claude はこのリポジトリで管理するため除外）
+# Laravel スターターキット（Vue）の既定から追記
 /bootstrap/ssr
 /public/fonts-manifest.dev.json
 /public/storage
