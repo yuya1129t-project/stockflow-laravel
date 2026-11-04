@@ -9,7 +9,7 @@
 ## このリポジトリについて
 
 - 自社開発（個人の公開成果物）です
-- 要件・方針の決定と公開の判断は本人が行い、設計・実装・コードレビュー（Claude と Codex の独立したレビュー）・指摘への対応は Claude Code が行っています。本人は成果物を確認しています
+- 要件・方針の決定と公開の判断は本人が行い、設計・実装・コードレビュー（2 種類の AI による独立したレビュー）・指摘への対応は生成 AI の開発ツールが行っています。本人は成果物を確認しています
 - **データはすべて架空です**（実在の会社・人物・取引とは関係ありません）
 - [Next.js 版（stockflow-next）](https://github.com/yuya1129t-project/stockflow-next) と **同じ業務仕様**（[docs/spec.md](docs/spec.md)）・**同じ REST API 仕様**（[docs/openapi.json](docs/openapi.json)）で実装します
 - 設計の理由と確かめ方（MVC・Eloquent・権限・N+1・在庫引当・テストの方針・開発の進め方）は [docs/design-notes.md](docs/design-notes.md) にまとめています
@@ -754,6 +754,6 @@ scripts/build-release.sh         # コミット済みの HEAD から作る（git
 ## 開発の進め方
 
 - タスクは GitHub Issues で管理し、1 Issue = 1 ブランチ（`feat/<issue番号>-<短い名前>`）= 1 PR で進めます
-- PR は CI（Pint・Larastan・Pest・ビルド・ブラウザテスト）が通り、Claude と Codex の独立したレビューの指摘に対応してからマージします
+- PR は CI（Pint・Larastan・Pest・ビルド・ブラウザテスト）が通り、独立した 2 本のレビューの指摘に対応してからマージします
 - 進め方と設計の理由は [docs/design-notes.md](docs/design-notes.md) にまとめています
 - 業務仕様は [docs/spec.md](docs/spec.md)、REST API の契約は [docs/openapi.json](docs/openapi.json)（Next.js 版と共通。変更しない）を正とします
